@@ -3688,6 +3688,7 @@ function SchedulingSection({
                 s.allow_guests ? T.schedule.guestsOn : "",
                 s.allow_mobs ? T.schedule.mobsOn : "",
                 s.target_type === "new" && s.allow_narration ? T.schedule.narrationOn : "",
+                s.auto_topic_start ? T.schedule.topicStartOn : "",
               ].filter(Boolean);
               return parts.length ? (
                 <p className="mt-0.5 text-xs leading-relaxed" style={{ color: "var(--dim)" }}>{parts.join(" ／ ")}</p>
@@ -3756,6 +3757,7 @@ function ScheduleEditSheet({
   const [allowGuests, setAllowGuests] = useState(initial?.allow_guests ?? false);
   const [allowMobs, setAllowMobs] = useState(initial?.allow_mobs ?? false);
   const [allowNarration, setAllowNarration] = useState(initial?.allow_narration ?? false);
+  const [autoTopicStart, setAutoTopicStart] = useState(initial?.auto_topic_start ?? false);
   const [flavors, setFlavors] = useState<string[]>(initial?.flavors ?? []);
   const [error, setError] = useState("");
 
@@ -3775,6 +3777,7 @@ function ScheduleEditSheet({
     allow_guests: allowGuests,
     allow_mobs: allowMobs,
     allow_narration: allowNarration,
+    auto_topic_start: autoTopicStart,
     flavors,
   });
   const save = useMutation({
@@ -4048,6 +4051,16 @@ function ScheduleEditSheet({
             </div>
           </div>
         )}
+
+        <div className="mt-5">
+          <label className="flex items-center gap-2 text-sm font-bold" style={{ color: "var(--text)" }}>
+            <input type="checkbox" checked={autoTopicStart} onChange={(e) => setAutoTopicStart(e.target.checked)} className="h-5 w-5" style={{ accentColor: "var(--accent)" }} />
+            {T.scheduleEdit.autoTopicStartLabel}
+          </label>
+          <p className="mt-1 text-xs leading-relaxed" style={{ color: "var(--dim)" }}>
+            {T.scheduleEdit.autoTopicStartNote}
+          </p>
+        </div>
 
         {error && <p className="mt-3 text-sm" style={{ color: "var(--danger)" }}>{error}</p>}
         <div className="mt-4 flex gap-3">

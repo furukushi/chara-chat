@@ -169,6 +169,13 @@
       "when": 1795696780432,
       "tag": "0024_add_intent_to_reviews",
       "breakpoints": true
+    },
+    {
+      "idx": 24,
+      "version": "6",
+      "when": 1795750329311,
+      "tag": "0025_add_auto_topic_start_to_schedules",
+      "breakpoints": true
     }
   ]
 }

@@ -15,8 +15,17 @@
 // なければ failed(pending_timeout) に確定する。失敗時は理由コードに加えて
 // fail_detail（生成コマンドの終了コード・エラー出力の末尾や、サーバ側で
 // 確定した経緯）を残し、次回の失敗で原因を追えるようにする。
+// 議題の見張り（ローカル改善: 上流リポジトリには無い）: 「自動」の議題の
+// 「準備中」（meta の topic_pending）にも同じ見張りを拡張したもの
+// （sweepStaleTopics）。仲介は生成前に beginTopic で着手を原子的に主張し、
+// 主張の無い準備中が3分を超えたら仲介を蹴り直し（最大2回）、主張済みでも
+// 10分完了しないもの・蹴り直しの上限に達したものは失敗として確定し、
+// 全体ログへ理由付きで記録する。failTopic でも理由を全体ログへ残す。
+// 次回上流から更新分を pull する際、この見張り（返信／レビュー／議題）と
+// 差分/コンフリクトが発生したら、マージするか破棄するかを必ず利用者に聞くこと。
 
 import { defineAction, z, type ActionsModule, type Ctx } from "@hatch/space-sdk";
+import { privileged } from "@space/privileged";
 import { and, asc, desc, eq, gt, inArray, lt, lte, or, sql } from "drizzle-orm";
 import type { BatchItem } from "drizzle-orm/batch";
 import * as schema from "./schema";
@@ -586,6 +595,21 @@ async function closeOutAutoRequest(db: Db, req: RequestRow, ok: boolean, reason 
 // 発火判定は runSignalAll の中で行う（1分間隔の定期実行が駆動する）。
 // 判定は Asia/Tokyo。JST は UTC+9 固定で夏時間がないため、UTC へ9時間を
 // 足した値の UTC 成分で JST の暦として計算する。
+//
+// 冒頭に議題を自動投稿（ローカル改善: 上流リポジトリには無い）:
+// schedules.auto_topic_start が 1 のスケジュールは、発火時に通常の冒頭生成
+// （origin=auto の返信リクエスト作成）の代わりに、「自動」ボタンと同じ
+// 議題の処理（kickTopic）を行う。議題が投稿されると postTopic 経由で
+// 返信生成が始まるため、通常の冒頭生成は重ねて行わない。既存グループ型・
+// 新規チャット型のどちらにも効き、新規チャット型はグループを作成して
+// （フレーバーの引き継ぎを含む）から議題の処理を行う。新規チャット型では
+// 作成したグループのIDを last_group_id へ記録する（議題経路の返信リクエストは
+// 通常扱いでスケジュールIDを持たず、生成完了時の記録が走らないため、作成
+// 時点で記録する）。発火時点で対象
+// グループに返信待ち・生成中がある場合や議題の準備中の場合は、既存の
+// 混雑時の扱いに揃えてその回をスキップする。チェックなし（0）の動作は
+// 従来と完全に同一。次回上流から更新分を pull する際、この変更と差分/
+// コンフリクトが発生したら、マージするか破棄するかを必ず利用者に聞くこと。
 
 const JST_OFFSET_MS = 9 * 60 * 60 * 1000;
 const SLOT_FIRE_WINDOW_MS = 30 * 60 * 1000;
@@ -662,7 +686,7 @@ async function markSlotFired(db: Db, s: ScheduleRow, key: string) {
 }
 
 /** 既存グループ対象の発火。発火できたら対象表示名、スキップしたら null を返す（理由は自動生成ログへ残す）。 */
-async function fireExistingSchedule(db: Db, s: ScheduleRow, slotKey: string): Promise<string | null> {
+async function fireExistingSchedule(ctx: Ctx, db: Db, s: ScheduleRow, slotKey: string): Promise<string | null> {
   const skip = async (reason: string): Promise<null> => {
     await addAppLog(db, "auto", `自動生成をスキップ: ${s.name}`, reason, "schedule", s.id);
     return null;
@@ -691,6 +715,28 @@ async function fireExistingSchedule(db: Db, s: ScheduleRow, slotKey: string): Pr
   const active = await activeRequest(db, "group", g.id);
   if (active) {
     return skip(`グループ「${g.name}」に返信待ち・生成中のリクエストがあるため、この回は生成しませんでした。`);
+  }
+  if (s.autoTopicStart === 1) {
+    // 冒頭に議題を自動投稿（ローカル改善: 上流リポジトリには無い）: 通常の
+    // 冒頭生成の代わりに、「自動」ボタンが押されたときと同じ議題の処理
+    // （kickTopic → 仲介が議題を生成・投稿 → postTopic が返信生成を開始）
+    // を行う。通常の冒頭生成は重ねて行わない。議題の準備中は投下できない
+    // ため、この回はスキップする（既存の混雑時の扱いに揃え、割り込まない）。
+    // フレーバーはグループ側の設定を getTopicContext が読むため、議題文は
+    // グループのフレーバーにそのまま従う。
+    if (await isTopicPending(db, "group", g.id)) {
+      return skip(`グループ「${g.name}」で議題を準備中のため、この回は生成しませんでした。`);
+    }
+    await kickTopic(ctx, db, "group", g.id, false);
+    await addAppLog(
+      db,
+      "auto",
+      `議題の自動投稿を開始: ${s.name}`,
+      `スケジュール「${s.name}」（${slotKey} JST）が発火し、グループ「${g.name}」で冒頭に議題を自動投稿します。議題が投稿されると、そこから掛け合いが始まります。`,
+      "schedule",
+      s.id,
+    );
+    return null;
   }
   await db.insert(schema.replyRequests).values({
     targetKind: "group",
@@ -767,7 +813,7 @@ async function createRandomGroup(
  * ローカル改善（上流リポジトリには無い）: カテゴリ未指定（category_ids が空）の
  * 場合は全登録キャラを母集団とする。カテゴリが指定されている場合は従来どおり
  * 選択カテゴリ（子孫展開）の和集合に属するキャラだけが母集団（未分類は含まない）。 */
-async function fireNewSchedule(db: Db, s: ScheduleRow, slotKey: string, nowMs: number): Promise<string | null> {
+async function fireNewSchedule(ctx: Ctx, db: Db, s: ScheduleRow, slotKey: string, nowMs: number): Promise<string | null> {
   const categoryIds = parseJsonIntArray(s.categoryIds);
   const allChars = await db.select().from(schema.characters).orderBy(asc(schema.characters.id));
   let population: typeof allChars;
@@ -810,6 +856,33 @@ async function fireNewSchedule(db: Db, s: ScheduleRow, slotKey: string, nowMs: n
   });
   if (!created) return null;
   const { groupId: gid, name, picked } = created;
+  if (s.autoTopicStart === 1) {
+    // 冒頭に議題を自動投稿（ローカル改善: 上流リポジトリには無い）: 通常の
+    // 冒頭生成の代わりに、作成したグループへ「自動」ボタンと同じ議題の
+    // 処理（kickTopic）を行う。通常の冒頭生成は重ねて行わない。
+    // フレーバーは createRandomGroup がスケジュール側の指定をグループへ
+    // 引き継ぎ済みで、getTopicContext がグループ側を読むため、議題文は
+    // そのフレーバーに従う。作られたばかりのグループには返信待ち・生成中・
+    // 議題準備中はあり得ないため、混雑時のスキップ判定は不要。
+    // last_group_id の記録: 通常（オフ）発火では生成完了時に
+    // closeOutAutoRequest が記録するが、議題経路では投稿後の返信リクエストが
+    // 通常（manual）扱いでスケジュールIDを持たないため、その記録が走らない。
+    // そのため、グループを作成したこの時点でオフ発火と同じく記録する。
+    await db
+      .update(schema.schedules)
+      .set({ lastGroupId: gid, updatedAt: new Date() })
+      .where(eq(schema.schedules.id, s.id));
+    await kickTopic(ctx, db, "group", gid, false);
+    await addAppLog(
+      db,
+      "auto",
+      `議題の自動投稿を開始: ${s.name}`,
+      `スケジュール「${s.name}」（${slotKey} JST）が発火し、新しいグループ「${name}」を作成して冒頭に議題を自動投稿します。議題が投稿されると、そこから掛け合いが始まります。抽選結果: ${picked.map((c) => c.displayName).join("・")}`,
+      "schedule",
+      s.id,
+    );
+    return null;
+  }
   await db.insert(schema.replyRequests).values({
     targetKind: "group",
     targetId: gid,
@@ -835,7 +908,7 @@ async function fireNewSchedule(db: Db, s: ScheduleRow, slotKey: string, nowMs: n
  * スキップとして自動生成ログへ残す。理由を問わず、発火・スキップが確定した
  * 時点で last_fired_slot へ記録し、同一スロットの処理は1回だけにする。
  */
-async function evaluateSchedules(db: Db): Promise<string[]> {
+async function evaluateSchedules(ctx: Ctx, db: Db): Promise<string[]> {
   const nowMs = Date.now();
   const fired: string[] = [];
   const rows = await db
@@ -861,8 +934,8 @@ async function evaluateSchedules(db: Db): Promise<string[]> {
     }
     const name =
       s.targetType === "existing"
-        ? await fireExistingSchedule(db, s, slot.key)
-        : await fireNewSchedule(db, s, slot.key, nowMs);
+        ? await fireExistingSchedule(ctx, db, s, slot.key)
+        : await fireNewSchedule(ctx, db, s, slot.key, nowMs);
     if (name) fired.push(name);
   }
   return fired;
@@ -1314,18 +1387,65 @@ async function kickImport(ctx: Ctx, db: Db): Promise<boolean> {
 // （autoTopic 系のカラム名・アクション名・meta キー）は互換のため不変。
 // 次回上流から更新分を pull する際、この変更と差分/コンフリクトが発生
 // したら、マージするか破棄するかを必ず利用者に聞くこと。
+//
+// フレーバー準拠（2026-11-27、ローカル改善#6の改訂）: フレーバーが指定
+// されている会話では、議題文もフレーバーに従う。getTopicContext が
+// その会話のフレーバー（1対1は characters.flavors、グループは
+// groups.flavors）を材料へ追加し、TOPIC_MESSAGE に「フレーバーの状況
+// （場所・関係性・前提）を前提として議題を作る／フレーバーと矛盾する
+// 議題にしない／フレーバーの文面を議題文に直接引用しない」条項を加えた。
+// フレーバー未指定の会話では材料（flavors は空配列）・指示とも従来と
+// 同一の扱いになる（条項は flavors が空でない場合だけ適用される）。
+// 履歴なし（会話の冒頭になる議題）と履歴ありの両方、手動投下（「自動」
+// ボタン）と自動投下（「自動」ON設定）の両方に効く（どちらも同じ
+// kickTopic → TOPIC_MESSAGE → getTopicContext の経路を使うため）。
+// 出所の乱数選択（履歴ありで約2割あえて無関係な出所を選ぶ仕様を含む）
+// と自動投下の安全弁（30分無動作・連続3回まで・利用者発言でリセット・
+// 返信待ち／生成中は投下しない等）は従来どおり維持する。無関係な出所が
+// 選ばれた場合も、話題の題材は無関係でよいが議題文はフレーバーの状況の
+// 枠内で作る。返信生成側のフレーバー扱い（絶対のルール等）は不変。
+// 次回上流から更新分を pull する際、この改訂と差分/コンフリクトが発生
+// したら、マージするか破棄するかを必ず利用者に聞くこと。
+//
+// 議題の見張り（2026-11-27、ローカル改善#6の改訂）: 従来、議題の「準備中」
+// には見張りが無く、仲介の起動がこぼれると準備中が長く続くか、投稿され
+// ずに無言で消えた（本番で約17分止まって消えた例と5分以上止まった例を
+// 観測）。返信／レビューの pending 見張りと同じ仕組みを議題にも持たせた:
+// 準備中の開始時刻は従来どおり topic_pending の値（ms）として記録され、
+// 仲介は生成前に beginTopic で着手を原子的に主張する（topic_claimed）。
+// runSignalAll の sweepStaleTopics が、未主張で3分を超えた準備中は仲介を
+// 蹴り直し（最大2回、topic_kicks で数える）、主張済みでも10分完了しない
+// ものと蹴り直しの上限に達したものは失敗として確定し、全体ログへ
+// 「議題の生成に失敗（理由: 応答なし）」と記録する。failTopic で仲介が
+// 諦めた場合も、理由を全体ログへ残す。入口3つ（「自動」ボタン／「自動」
+// ONの自動投下／スケジュールの「冒頭に議題を自動投稿」）はすべて
+// kickTopic 経由で同じ準備中を使うため、見張りは共通で効く。正常な
+// 議題の流れ（速く投稿される通常ケース）の挙動・表示は不変で、見張りは
+// 止まった時にだけ働く。失敗確定直後の自動投下は、失敗時刻
+// （topic_failed_at）から30分のクールダウンで繰り返しを抑える。
+// 次回上流から更新分を pull する際、この改訂と差分/コンフリクトが発生
+// したら、マージするか破棄するかを必ず利用者に聞くこと。
 
 const TOPIC_IDLE_MS = 30 * 60 * 1000;
 const TOPIC_MAX_AUTO = 3;
 // 議題の仲介を起動してから投稿されるまでの猶予。これを過ぎた「準備中」は
 // 仲介が終わらなかったものとして扱い、再び投下できるようにする。
 const TOPIC_PENDING_MS = 10 * 60 * 1000;
+// 議題の見張り（ローカル改善: 上流リポジトリには無い）: 返信／レビューの
+// pending 見張り（PENDING_STALE_MS / PENDING_MAX_KICKS）と同じ考え方。
+// 主張（beginTopic）されていない準備中が3分を超えたら仲介を蹴り直し
+// （最大2回）、主張済みでも着手から10分を超えて完了しないもの、蹴り直しの
+// 上限に達しても進まないものは失敗として確定する。
+const TOPIC_STALE_MS = 3 * 60 * 1000;
+const TOPIC_MAX_KICKS = 2;
+const TOPIC_CLAIMED_TIMEOUT_MS = 10 * 60 * 1000;
 
 const TOPIC_MESSAGE = [
 "あなたは「キャラチャット」アプリ（スペース slug: kiyaratiyatuto）の「自動」仲介です。指定された会話に議題を1つ考えて投稿するのが仕事です。議題の文章を考えるのはあなたの役割ですが、キャラクターの返信文を書いてはいけません（返信は投稿後に別の生成が担当します）。",
 "",
 "手順:",
-"1. artifact.invoke_action で slug=kiyaratiyatuto の getTopicContext を、末尾に指定された target_kind と target_id で呼ぶ。ok=false なら、そのまま終了する。",
+"1. artifact.invoke_action で slug=kiyaratiyatuto の getTopicContext を、末尾に指定された target_kind と target_id で呼ぶ。ok=false なら、failTopic({target_kind, target_id, reason: getTopicContext が返した reason}) を呼んでから終了する（reason が \"not_pending\" の場合は failTopic を呼ばず、そのまま終了する）。",
+"1.5. getTopicContext が ok=true を返したら、生成を始める前に必ず beginTopic({target_kind, target_id}) を呼ぶ。ok=false なら、別の仲介が既にこの議題を処理中なので、生成も投稿もせず、そのまま終了する（failTopic も呼ばない）。",
 "2. 議題の出所を決める（シェルの乱数で選ぶ。自分で偏らせない）:",
 " - 会話の履歴がある場合（getTopicContext の history が空でない場合）: まず echo $((RANDOM % 5)) を実行する。0 が出たら「無関係な議題」の回として、下の『履歴が無い場合』の手順で文脈以外の出所から1つ選ぶ（会話の流れとは無関係な話題でよい）。1〜4 が出たら「会話の流れ」（source=\"context\"）とし、これまでの会話の流れ・内容・雰囲気を踏まえ、その続きや派生、関連する話題になる議題を作る。",
 " - 履歴が無い新規の会話の場合: echo $((RANDOM % 7)) を実行し、0=時事ネタ、1=参加キャラの興味、2=プロフィール由来、3=Muse上での出来事、4=季節・今日は何の日、5=もしも・二択、6=キャラ同士の対比 とする。",
@@ -1337,8 +1457,9 @@ const TOPIC_MESSAGE = [
 "   - 季節・今日は何の日（season）: getTopicContext の today（今日の日付）を使う。その日が何の記念日・何の日か、季節の行事（祝日・年中行事・旬のもの等）があればウェブ検索で確認し、それにちなんだ議題を作る。確かな記念日が分からない場合は、季節（today の月）らしい話題（天気・旬の食べ物・行事の準備など）にする。実在しない記念日は捏造しない。",
 "   - もしも・二択（hypothetical）: 仮定の質問（「もし○○だったら？」）か究極の二択（「○○と○○、どちらを選ぶ？」）の形の議題を作る。参加キャラの性格や設定に軽く絡められるとなお良いが、無理に絡めなくてよい。答えが分かれてキャラ同士の違いが出るような問いにすること。",
 "   - キャラ同士の対比（contrast）: 参加キャラから2人を選び（シェルの乱数で選ぶ）、2人の profile_items や設定抜粋を読み比べて、出身地・好きなもの・価値観などの違いや意外な共通点を突く議題を作る（例:「○○と○○は出身地がまるで違うけど、どちらの暮らしが自分に合っていると思う？」）。参加キャラが1人しかいない場合（1対1）は成立しないので「プロフィール由来」に切り替える。設定に書かれていない違いは捏造しない。",
+"   - フレーバー（flavors）: getTopicContext の flavors が空でない場合、そのフレーバーが示す状況（場所・関係性・前提）を前提として議題を作ること。フレーバーと矛盾する議題にはしないこと。履歴ありで「無関係な議題」の回になった場合も、話題の題材自体は会話と無関係でよいが、議題文はフレーバーの状況の枠内で作ること。フレーバーの文面を議題文に直接引用しないこと（フレーバーは前提として静かに反映し、その文面そのものを話題にしない）。flavors が空の場合は、この条項は適用せず従来どおりに作ること。",
 "4. 議題ができたら postTopic({target_kind, target_id, body: 議題文, source}) を呼ぶ。source は \"context\"（会話の流れ）/ \"news\"（時事ネタ）/ \"interest\"（キャラの興味）/ \"profile\"（プロフィール由来）/ \"muse\"（Muse上での出来事）/ \"season\"（季節・今日は何の日）/ \"hypothetical\"（もしも・二択）/ \"contrast\"（キャラ同士の対比）のどれかで、実際に使った出所に合わせる（切り替えた場合は切り替え先）。議題文は見出しや「議題：」といった前置きを付けず、話題そのものだけを1〜2文で書く（表示側で「自動」の議題と分かる形になる）。参加キャラが話し返したくなる、開かれた問いかけや話題の提示にすること。",
-"5. postTopic がエラーになった場合や、手順の途中で続行できなくなった場合は、必ず failTopic({target_kind, target_id}) を呼んでから終了する（呼ばないと「議題を準備中」の表示が残り続ける）。",
+"5. postTopic がエラーになった場合や、手順の途中で続行できなくなった場合は、必ず failTopic({target_kind, target_id, reason, detail}) を呼んでから終了する（呼ばないと「議題を準備中」の表示が残り続ける）。reason は諦めた理由が分かる短い語（例: \"generation_error\" / \"no_source\" / \"post_error\"）、detail にはエラーの内容など経緯を原文で入れること（理由は全体ログに記録され、後から追えるようにするため）。",
 ].join("\n");
 
 /** プロフィール由来の議題の材料: キャラの設定本文と「関係・呼び方」から、
@@ -1381,23 +1502,169 @@ function todayJstLabel(): string {
   return `${get("year")}年${get("month")}月${get("day")}日（${get("weekday")}）`;
 }
 
+// 議題の状態は meta に保持する（キー一覧）:
+// - topic_pending:<kind>:<id> … 「準備中」の開始時刻（ms文字列）。空は準備中でない。
+// - topic_auto:<kind>:<id> … 自動投稿として起動されたか（"1" / "0"）。
+// - topic_claimed:<kind>:<id> … 仲介が beginTopic で着手を主張した時刻（ms文字列）。
+//   空は未主張。主張済みの準備中は生成中として見張りの蹴り直し対象にしない。
+// - topic_kicks:<kind>:<id> … 見張りが仲介を蹴り直した回数。
+// - topic_last_kick:<kind>:<id> … 最後に蹴り直した時刻（ms文字列）。
+// - topic_failed_at:<kind>:<id> … 直近で議題の生成が失敗として確定した時刻。
+//   自動投稿の走査が失敗直後に同じ会話へ即座に再投下して失敗を繰り返さない
+//   ためのクールダウンに使う。
+const topicPendingKey = (kind: "chat" | "group", id: number) => `topic_pending:${kind}:${id}`;
+const topicAutoKey = (kind: "chat" | "group", id: number) => `topic_auto:${kind}:${id}`;
+const topicClaimedKey = (kind: "chat" | "group", id: number) => `topic_claimed:${kind}:${id}`;
+const topicKicksKey = (kind: "chat" | "group", id: number) => `topic_kicks:${kind}:${id}`;
+const topicLastKickKey = (kind: "chat" | "group", id: number) => `topic_last_kick:${kind}:${id}`;
+const topicFailedAtKey = (kind: "chat" | "group", id: number) => `topic_failed_at:${kind}:${id}`;
+
+function metaMs(v: string | undefined): number {
+  const n = Number(v || "0");
+  return Number.isFinite(n) ? n : 0;
+}
+
+/** 「準備中」の開始時刻（ms）。準備中でなければ 0。TOPIC_PENDING_MS の失効判定を
+ * 含まない生の値で、見張り（sweepStaleTopics）はこちらで走査する（失効判定を
+ * 通すと、止まった準備中が「存在しない」ことになり見張りが働けないため）。 */
+async function topicPendingStartedAt(db: Db, kind: "chat" | "group", targetId: number): Promise<number> {
+  return metaMs(await getMeta(db, topicPendingKey(kind, targetId)));
+}
+
 async function isTopicPending(db: Db, kind: "chat" | "group", targetId: number): Promise<boolean> {
-  const v = Number((await getMeta(db, `topic_pending:${kind}:${targetId}`)) || "0");
-  const t = Number.isFinite(v) ? v : 0;
+  const t = await topicPendingStartedAt(db, kind, targetId);
   return t > 0 && Date.now() - t < TOPIC_PENDING_MS;
+}
+
+/** 議題の状態（準備中・主張・蹴り直し回数）をすべて消す。 */
+async function clearTopicState(db: Db, kind: "chat" | "group", targetId: number) {
+  await setMeta(db, topicPendingKey(kind, targetId), "");
+  await setMeta(db, topicClaimedKey(kind, targetId), "");
+  await setMeta(db, topicKicksKey(kind, targetId), "");
+  await setMeta(db, topicLastKickKey(kind, targetId), "");
+}
+
+/** 議題の対象表示名（全体ログの見出し用）。対象が消えていれば汎用の名を返す。 */
+async function topicTargetName(db: Db, kind: "chat" | "group", targetId: number): Promise<string> {
+  if (kind === "chat") {
+    const rows = await db.select().from(schema.characters).where(eq(schema.characters.id, targetId));
+    return rows[0] ? `${rows[0].displayName}（1対1）` : "（削除済みのキャラクター）";
+  }
+  const rows = await db.select().from(schema.groups).where(eq(schema.groups.id, targetId));
+  return rows[0] ? `${rows[0].name}（グループ）` : "（削除済みのグループ）";
+}
+
+/**
+ * 議題の生成失敗を確定させる共通処理（見張りの失敗確定と failTopic で共用）:
+ * 準備中の表示を消し、失敗時刻を記録し、全体ログへ理由付きで1件残す。
+ * 無言で消える状態を作らないことが目的（ローカル改善: 上流には無い）。
+ */
+async function failTopicPending(db: Db, kind: "chat" | "group", targetId: number, reasonText: string) {
+  await clearTopicState(db, kind, targetId);
+  await setMeta(db, topicFailedAtKey(kind, targetId), String(Date.now()));
+  const name = await topicTargetName(db, kind, targetId);
+  await addAppLog(db, "auto", `議題の生成に失敗: ${name}`, reasonText, kind === "chat" ? "character" : "group", targetId);
 }
 
 /** 議題の仲介を起動する。手動（auto=false）と自動投稿（auto=true）で共用。 */
 async function kickTopic(ctx: Ctx, db: Db, kind: "chat" | "group", targetId: number, auto: boolean) {
-  await setMeta(db, `topic_pending:${kind}:${targetId}`, String(Date.now()));
-  await setMeta(db, `topic_auto:${kind}:${targetId}`, auto ? "1" : "0");
+  await setMeta(db, topicPendingKey(kind, targetId), String(Date.now()));
+  await setMeta(db, topicAutoKey(kind, targetId), auto ? "1" : "0");
+  await setMeta(db, topicClaimedKey(kind, targetId), "");
+  await setMeta(db, topicKicksKey(kind, targetId), "0");
+  await setMeta(db, topicLastKickKey(kind, targetId), "");
   try {
     await ctx.agent.spawnTask(`${TOPIC_MESSAGE}\n\n（対象: target_kind="${kind}", target_id=${targetId}）`, {
       dedupeKey: `chara-topic-${kind}-${targetId}`,
     });
   } catch {
-    await setMeta(db, `topic_pending:${kind}:${targetId}`, "");
+    await setMeta(db, topicPendingKey(kind, targetId), "");
   }
+}
+
+/**
+ * 見張りの蹴り直し専用の議題キック。準備中の開始時刻・主張・自動フラグには
+ * 触れず（経過時間の判定を乱さないため）、dedupeKey を蹴り直し回ごとに変えて、
+ * 起動済みのまま動いていない仲介タスクの重複排除に潰されないようにする。
+ */
+async function rekickTopic(ctx: Ctx, kind: "chat" | "group", targetId: number, kickNo: number) {
+  try {
+    await ctx.agent.spawnTask(`${TOPIC_MESSAGE}\n\n（対象: target_kind="${kind}", target_id=${targetId}）`, {
+      dedupeKey: `chara-topic-watchdog-${kind}-${targetId}-${kickNo}`,
+    });
+  } catch {
+    /* 起動できなくても準備中は残る（次の見張りで失敗確定へ進む） */
+  }
+}
+
+/**
+ * 議題の見張り（ローカル改善: 上流リポジトリには無い）。返信／レビューの
+ * sweepStalePending と同じ考え方を、meta 保持の「準備中」へ拡張したもの。
+ * runSignalAll（2分間隔の定期実行と発言直後の共通経路）から呼ばれる。
+ * 入口（「自動」ボタン／「自動」ONの自動投下／スケジュールの冒頭議題）は
+ * すべて kickTopic 経由で同じ準備中を使うため、この見張りは共通で効く。
+ * - 主張されていない準備中: 開始（または前回の蹴り直し）から3分を超えたら
+ *   仲介を蹴り直す（最大 TOPIC_MAX_KICKS 回）。蹴り直しを使い切っても
+ *   進まなければ失敗として確定する。
+ * - 主張済みの準備中: 生成中として蹴り直しはしない。ただし着手から10分を
+ *   超えて完了しなければ失敗として確定する。
+ * 失敗確定はいずれも failTopicPending で全体ログへ理由を残す。
+ */
+async function sweepStaleTopics(ctx: Ctx, db: Db) {
+  const now = Date.now();
+  const rows = await db
+    .select()
+    .from(schema.meta)
+    .where(sql`${schema.meta.key} LIKE 'topic_pending:%' AND ${schema.meta.value} != ''`);
+  let kicked = false;
+  for (const row of rows) {
+    const m = /^topic_pending:(chat|group):(\d+)$/.exec(row.key);
+    if (!m) continue;
+    const kind = m[1] as "chat" | "group";
+    const targetId = Number(m[2]);
+    const startedAt = metaMs(row.value);
+    if (startedAt <= 0) continue;
+    const state = await getMetaMany(db, [
+      topicClaimedKey(kind, targetId),
+      topicKicksKey(kind, targetId),
+      topicLastKickKey(kind, targetId),
+    ]);
+    const claimedAt = metaMs(state.get(topicClaimedKey(kind, targetId)));
+    if (claimedAt > 0) {
+      // 主張済み = 生成中。蹴り直し・二重投稿の防止のため干渉しない。
+      // 10分を超えて完了しないものだけ失敗として確定する。
+      if (now - claimedAt > TOPIC_CLAIMED_TIMEOUT_MS) {
+        const ageMin = Math.max(1, Math.round((now - claimedAt) / 60000));
+        await failTopicPending(
+          db,
+          kind,
+          targetId,
+          `議題の生成に失敗しました（理由: 応答なし）。仲介が着手してから${ageMin}分間完了しなかったため、失敗として確定しました。`,
+        );
+      }
+      continue;
+    }
+    const kicks = Math.max(0, Math.floor(metaMs(state.get(topicKicksKey(kind, targetId)))));
+    const lastKickAt = metaMs(state.get(topicLastKickKey(kind, targetId)));
+    const base = Math.max(lastKickAt, startedAt);
+    if (now - base < TOPIC_STALE_MS) continue;
+    if (kicks < TOPIC_MAX_KICKS) {
+      // 蹴り直しの記録は主張より先に確定させる（次の見張りが同じ回を二重に蹴らない）。
+      await setMeta(db, topicKicksKey(kind, targetId), String(kicks + 1));
+      await setMeta(db, topicLastKickKey(kind, targetId), String(now));
+      await rekickTopic(ctx, kind, targetId, kicks + 1);
+      kicked = true;
+    } else {
+      const ageMin = Math.max(1, Math.round((now - startedAt) / 60000));
+      await failTopicPending(
+        db,
+        kind,
+        targetId,
+        `議題の生成に失敗しました（理由: 応答なし）。「議題を準備中」のまま${ageMin}分間開始されず、仲介の蹴り直しを${kicks}回試みても投稿されなかったため、失敗として確定しました。`,
+      );
+    }
+  }
+  if (kicked) ctx.invalidateQueries();
 }
 
 /**
@@ -1416,6 +1683,10 @@ async function scanAutoTopics(ctx: Ctx, db: Db) {
     const latest = await latestRequest(db, "chat", c.id);
     if (latest?.status === "failed") continue;
     if (await isTopicPending(db, "chat", c.id)) continue;
+    // 見張り等で議題の生成が失敗として確定した直後は、その失敗から30分
+    // （通常の無動作の条件と同じ長さ）経つまで再投下しない（失敗の即時
+    // 繰り返し防止。手動の「自動」ボタンには影響しない）。
+    if (now - metaMs(await getMeta(db, topicFailedAtKey("chat", c.id))) < TOPIC_IDLE_MS) continue;
     const msgs = await db
       .select()
       .from(schema.messages)
@@ -1437,6 +1708,7 @@ async function scanAutoTopics(ctx: Ctx, db: Db) {
     const latest = await latestRequest(db, "group", g.id);
     if (latest?.status === "failed") continue;
     if (await isTopicPending(db, "group", g.id)) continue;
+    if (now - metaMs(await getMeta(db, topicFailedAtKey("group", g.id))) < TOPIC_IDLE_MS) continue;
     const msgs = await db
       .select()
       .from(schema.groupMessages)
@@ -1602,22 +1874,229 @@ return imageBytesComplete(bytes, mime) ? mime : null;
 }
 
 /**
+ * 画像取得先の安全策（SSRF 対策、2026-11-27 改訂: 上流リポジトリには無い
+ * ローカル改善の改訂。次回 pull で競合したらマージ/破棄を利用者に聞くこと）。
+ * 従来は「取得してよいホスト」の許可リスト（完全一致）方式だったが、リストに
+ * 無い公開ホストの画像が黙って欠落する実害（本番で2件）が出たため撤廃し、
+ * 「内部アドレスへの取得を遮断する」方式へ切り替えた。公開ホストであれば
+ * どのホストでも取得対象にし、危険な宛先（内部アドレス）だけを止める。
+ * 判定は isBlockedImageTarget がホップごとに行う: ホストがIPアドレスそのもの
+ * ならその範囲を検査し、ホスト名なら名前解決して解決先の全アドレスを検査
+ * する（1件でも内部向けが含まれれば取得しない）。名前解決できない宛先も
+ * 取得しない（fail closed）。
+ */
+
+/** IPv4 アドレス文字列をオクテット列へ分解する（IP リテラルでなければ null）。 */
+function parseIpv4Octets(s: string): [number, number, number, number] | null {
+const m = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(s);
+if (!m) return null;
+const o: [number, number, number, number] = [Number(m[1]), Number(m[2]), Number(m[3]), Number(m[4])];
+return o.every((n) => n <= 255) ? o : null;
+}
+
+/**
+ * IPv4 オクテット列が内部向けの範囲か。判定は2段構え:
+ * - どちらの段でも遮断（内部サービスへ到達し得る範囲）: 未指定・プライベート・
+ *   ループバック・リンクローカル・CGNAT・192.0.0.0/24。
+ * - strict の時だけ追加で遮断（予約・文書用・マルチキャスト等）: URL に直接
+ *   書かれた IP リテラル向け。名前解決の結果には適用しない — この実行環境の
+ *   リゾルバはプロキシの fake-IP 方式で、全ホスト名が 198.18.0.0/15（ベンチ
+ *   マーク用範囲）の合成アドレスへ解決されるため、解決結果にまで予約範囲を
+ *   広げると公開ホストの画像が全て取得できなくなる。文書用・ベンチマーク用・
+ *   マルチキャストの各範囲は内部サービスを指さないため、解決結果では許容する。
+ */
+function isBlockedIpv4Octets(o: [number, number, number, number], strict: boolean): boolean {
+const [a, b, c] = o;
+if (a === 0) return true; // 0.0.0.0/8（このホスト・未指定）
+if (a === 10) return true; // 10.0.0.0/8 プライベート
+if (a === 127) return true; // 127.0.0.0/8 ループバック
+if (a === 172 && b >= 16 && b <= 31) return true; // 172.16.0.0/12 プライベート
+if (a === 192 && b === 168) return true; // 192.168.0.0/16 プライベート
+if (a === 169 && b === 254) return true; // 169.254.0.0/16 リンクローカル（クラウドのメタデータ等）
+if (a === 100 && b >= 64 && b <= 127) return true; // 100.64.0.0/10 CGNAT（共有アドレス空間）
+if (a === 192 && b === 0 && c === 0) return true; // 192.0.0.0/24 IETF 特殊用途
+if (!strict) return false;
+if (a === 192 && b === 0 && c === 2) return true; // 192.0.2.0/24 TEST-NET-1（文書用）
+if (a === 198 && b === 51 && c === 100) return true; // 198.51.100.0/24 TEST-NET-2（文書用）
+if (a === 203 && b === 0 && c === 113) return true; // 203.0.113.0/24 TEST-NET-3（文書用）
+if (a === 198 && (b === 18 || b === 19)) return true; // 198.18.0.0/15 ベンチマーク用（予約）
+if (a === 192 && b === 88 && c === 99) return true; // 192.88.99.0/24 旧6to4リレー（予約）
+if (a >= 224) return true; // 224.0.0.0/4 マルチキャスト＋240.0.0.0/4 予約（ブロードキャスト含む）
+return false;
+}
+
+/**
+ * IPv6 アドレス文字列を16ビットグループ列（8個）へ展開する。
+ * "::" の圧縮と末尾の埋め込み IPv4（::ffff:192.0.2.1 形式）の両方に対応する。
+ * IP リテラルとして解釈できなければ null。
+ */
+function parseIpv6Groups(s: string): number[] | null {
+let t = s.toLowerCase();
+const v4 = /(\d{1,3}(?:\.\d{1,3}){3})$/.exec(t);
+if (v4?.[1]) {
+const o = parseIpv4Octets(v4[1]);
+if (!o) return null;
+const idx = t.lastIndexOf(":");
+if (idx < 0) return null;
+const hi = ((o[0] << 8) | o[1]).toString(16);
+const lo = ((o[2] << 8) | o[3]).toString(16);
+t = `${t.slice(0, idx)}:${hi}:${lo}`;
+}
+const halves = t.split("::");
+if (halves.length > 2) return null;
+const parseSide = (side: string): number[] | null => {
+if (side === "") return [];
+const parts = side.split(":");
+const out: number[] = [];
+for (const p of parts) {
+if (!/^[0-9a-f]{1,4}$/.test(p)) return null;
+out.push(parseInt(p, 16));
+}
+return out;
+};
+const left = parseSide(halves[0] ?? "");
+if (!left) return null;
+if (halves.length === 1) return left.length === 8 ? left : null;
+const right = parseSide(halves[1] ?? "");
+if (!right) return null;
+if (left.length + right.length >= 8) return null;
+return [...left, ...new Array<number>(8 - left.length - right.length).fill(0), ...right];
+}
+
+/**
+ * IPv6 グループ列が内部向けの範囲か。IPv4 と同じ2段構え（strict の時だけ
+ * 予約・文書用・マルチキャストも遮断する）。IPv4 射影（::ffff:a.b.c.d）と
+ * NAT64 既知プレフィックス（64:ff9b::/96）は埋め込み IPv4 の範囲で判定する
+ * （内部向け v4 への到達を防ぐ）。
+ */
+function isBlockedIpv6Groups(g: number[], strict: boolean): boolean {
+const [g0 = 0, g1 = 0, g2 = 0, g3 = 0, g4 = 0, g5 = 0, g6 = 0, g7 = 0] = g;
+if (g.every((n) => n === 0)) return true; // :: 未指定
+if (g0 === 0 && g1 === 0 && g2 === 0 && g3 === 0 && g4 === 0 && g5 === 0 && g6 === 0 && g7 === 1) return true; // ::1 ループバック
+if (g0 === 0 && g1 === 0 && g2 === 0 && g3 === 0 && g4 === 0 && g5 === 0xffff) {
+return isBlockedIpv4Octets([g6 >> 8, g6 & 0xff, g7 >> 8, g7 & 0xff], strict);
+}
+if (g0 === 0x64 && g1 === 0xff9b && g2 === 0 && g3 === 0 && g4 === 0 && g5 === 0) {
+return isBlockedIpv4Octets([g6 >> 8, g6 & 0xff, g7 >> 8, g7 & 0xff], strict);
+}
+if ((g0 & 0xffc0) === 0xfe80) return true; // fe80::/10 リンクローカル
+if ((g0 & 0xfe00) === 0xfc00) return true; // fc00::/7 ユニークローカル（プライベート）
+if (!strict) return false;
+if ((g0 & 0xff00) === 0xff00) return true; // ff00::/8 マルチキャスト
+if (g0 === 0x100 && g1 === 0 && g2 === 0 && g3 === 0) return true; // 100::/64 破棄専用（予約）
+if (g0 === 0x2001 && g1 === 0xdb8) return true; // 2001:db8::/32 文書用（予約）
+return false;
+}
+
+/** 文字列が IP リテラル（v4 / v6）かどうか。 */
+function isIpLiteral(s: string): boolean {
+return parseIpv4Octets(s) !== null || parseIpv6Groups(s) !== null;
+}
+
+/**
+ * IP リテラル文字列が内部向けか（URL に直接書かれた宛先向けの厳格な判定。
+ * プライベート／ループバック／リンクローカル／予約済みの全範囲を遮断する）。
+ */
+function isBlockedIpAddress(ip: string): boolean {
+const v4 = parseIpv4Octets(ip);
+if (v4) return isBlockedIpv4Octets(v4, true);
+const g = parseIpv6Groups(ip);
+if (g) return isBlockedIpv6Groups(g, true);
+return false;
+}
+
+/**
+ * 名前解決で得たアドレスが内部向けか（内部サービスへ到達し得る範囲だけを
+ * 遮断する緩い段。理由は isBlockedIpv4Octets のコメント参照）。
+ */
+function isBlockedResolvedAddress(ip: string): boolean {
+const v4 = parseIpv4Octets(ip);
+if (v4) return isBlockedIpv4Octets(v4, false);
+const g = parseIpv6Groups(ip);
+if (g) return isBlockedIpv6Groups(g, false);
+return true; // IP として解釈できない解決結果は信用しない
+}
+
+/**
+ * 名前ベースとリテラルIPだけでの遮断判定（名前解決はしない）。
+ * localhost 系と .local（mDNS）は名前の時点で内部向けとみなす。
+ */
+function isBlockedImageHostname(hostname: string): boolean {
+const host = hostname.toLowerCase().replace(/\.$/, "");
+if (host === "localhost" || host.endsWith(".localhost")) return true;
+if (host.endsWith(".local")) return true;
+const bare = host.startsWith("[") && host.endsWith("]") ? host.slice(1, -1) : host;
+return isBlockedIpAddress(bare);
+}
+
+/**
+ * 画像取得先として許可できない宛先かどうか（内部アドレス遮断方式）。
+ * ホストが IP リテラルならその範囲を検査する。ホスト名なら名前解決を行い
+ * （解決自体はホスト側の privileged 経由）、解決先に内部向けアドレスが
+ * 1件でも含まれれば遮断する。名前解決に失敗・超過した宛先も取得しない
+ * （fail closed）。リダイレクト先も fetchImageBytes がホップごとに同じ
+ * 判定を通す。
+ */
+async function isBlockedImageTarget(ctx: Ctx, hostname: string): Promise<boolean> {
+const host = hostname.toLowerCase().replace(/\.$/, "");
+if (isBlockedImageHostname(host)) return true;
+const bare = host.startsWith("[") && host.endsWith("]") ? host.slice(1, -1) : host;
+if (isIpLiteral(bare)) return false; // 公開IPリテラル（内部向けは上で遮断済み）
+let resolved: { ok: boolean; addresses: string[] };
+try {
+resolved = await ctx.executePrivileged(privileged.resolveHostAddresses, { hostname: host });
+} catch {
+return true; // 解決の口自体が使えない場合も取得しない
+}
+if (!resolved.ok || !resolved.addresses.length) return true;
+return resolved.addresses.some((a) => isBlockedResolvedAddress(a));
+}
+
+/**
  * 画像URLからサーバ側で直接画像を取得する。仲介エージェントのテキスト
  * 経由（base64）だと大きな画像が途中で切れて壊れるため、バイト列は
  * この経路だけで運ぶ。取得できない・壊れている場合は null（画像なしで
  * 取り込み自体は続行し、次回の再取り込みで回復できるようにする）。
+ * 取得先は http/https のみ。ホストの許可リストは無く、公開ホストであれば
+ * 取得対象にするが、isBlockedImageTarget で内部アドレス（プライベート／
+ * ループバック／リンクローカル／予約済み、ホスト名は名前解決の結果を含む）
+ * への取得を遮断する。リダイレクトも最大5ホップまで手動で追って各ホップで
+ * 再判定する。
  */
-async function fetchImageBytes(url: string): Promise<{ bytes: Uint8Array; mime: string } | null> {
+async function fetchImageBytes(ctx: Ctx, url: string): Promise<{ bytes: Uint8Array; mime: string } | null> {
 try {
-if (!/^https?:\/\//.test(url)) return null;
-const res = await fetch(url, {
+let current: URL;
+try {
+current = new URL(url);
+} catch {
+return null;
+}
+let res: Response | null = null;
+for (let hop = 0; hop <= 5; hop++) {
+if (current.protocol !== "http:" && current.protocol !== "https:") return null;
+if (await isBlockedImageTarget(ctx, current.hostname)) return null;
+res = await fetch(current, {
 headers: {
 "User-Agent": "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Mobile Safari/537.36",
 Accept: "image/*",
 },
 signal: AbortSignal.timeout(25_000),
-redirect: "follow",
+redirect: "manual",
 });
+if (res.status >= 300 && res.status < 400) {
+const location = res.headers.get("location");
+if (!location) return null;
+try {
+current = new URL(location, current);
+} catch {
+return null;
+}
+res = null;
+continue;
+}
+break;
+}
+if (!res) return null;
 if (!res.ok) return null;
 const declared = Number(res.headers.get("content-length") || "0");
 if (declared > IMAGE_FETCH_MAX_BYTES) return null;
@@ -2186,6 +2665,10 @@ async function runSignalAll(
   // ここで失敗確定した対象はこの後の走査で新規リクエスト化しない
   // （latest が failed で未返信が増えていない対象は従来どおり対象外）。
   await sweepStalePending(ctx, db);
+  // 議題の「準備中」の見張り（ローカル改善）。走査・自動投下より前に行い、
+  // ここで失敗確定した準備中はこの後の scanAutoTopics で再投下しない
+  // （失敗時刻のクールダウンで抑える）。
+  await sweepStaleTopics(ctx, db);
   const targets: string[] = [];
   let firstRequestId = 0;
   const chars = await db.select().from(schema.characters).orderBy(asc(schema.characters.id));
@@ -2274,7 +2757,7 @@ async function runSignalAll(
   // 未処理スロットを判定し、発火したら auto リクエストを作成する。発火した
   // 対象は targets に含めて仲介を起動する（生成の優先順位は getWorkItems 側で
   // 通常返信・レビューを先にし、自動生成を末尾にする）。
-  const autoFired = await evaluateSchedules(db);
+  const autoFired = await evaluateSchedules(ctx, db);
   targets.push(...autoFired);
   // 通知（notify_outbox）の配送は v2.3 から専用の配送cronが担い、仲介は
   // 通知に触れないため、未送信の通知だけが残っている場合は仲介を起動しない。
@@ -2384,7 +2867,7 @@ async function importOneProfile(
   // どちらの経路でも完全性チェックを通った画像だけを保存する。壊れた
   // 画像は保存せず、既存の画像も消さない（次回の再取り込みで回復する）。
   if (opts.imageUrl) {
-    const got = await fetchImageBytes(opts.imageUrl);
+    const got = await fetchImageBytes(ctx, opts.imageUrl);
     if (got) {
       imageBlobKey = `char-image/${parts.sourceProfileId ?? "manual"}-${Date.now()}`;
       await ctx.blobs.put(imageBlobKey, got.bytes, { contentType: got.mime });
@@ -2475,6 +2958,7 @@ const scheduleOutSchema = z.object({
   allow_guests: z.boolean(),
   allow_mobs: z.boolean(),
   allow_narration: z.boolean(),
+  auto_topic_start: z.boolean(),
   flavors: z.array(z.string()),
   last_fired_slot: z.string().nullable(),
   last_group_id: z.number().nullable(),
@@ -2497,6 +2981,7 @@ function scheduleToOut(s: ScheduleRow, targetGroupName: string | null): z.infer<
     allow_guests: s.allowGuests === 1,
     allow_mobs: s.allowMobs === 1,
     allow_narration: s.allowNarration === 1,
+    auto_topic_start: s.autoTopicStart === 1,
     flavors: parseFlavors(s.flavors),
     last_fired_slot: s.lastFiredSlot,
     last_group_id: s.lastGroupId,
@@ -2520,6 +3005,7 @@ const scheduleInputSchema = z.object({
   allow_guests: z.boolean(),
   allow_mobs: z.boolean(),
   allow_narration: z.boolean(),
+  auto_topic_start: z.boolean(),
   flavors: z.array(z.string().trim().min(1).max(FLAVOR_TEXT_MAX)).max(FLAVOR_MAX_PER_TARGET),
 });
 
@@ -2567,6 +3053,7 @@ function scheduleInputToValues(input: ScheduleInput) {
     allowGuests: input.allow_guests ? 1 : 0,
     allowMobs: input.allow_mobs ? 1 : 0,
     allowNarration: input.allow_narration ? 1 : 0,
+    autoTopicStart: input.auto_topic_start ? 1 : 0,
     flavors: JSON.stringify(input.target_type === "new" ? input.flavors : []),
   };
 }
@@ -2587,6 +3074,7 @@ function scheduleRowToInput(s: ScheduleRow): ScheduleInput {
     allow_guests: s.allowGuests === 1,
     allow_mobs: s.allowMobs === 1,
     allow_narration: s.allowNarration === 1,
+    auto_topic_start: s.autoTopicStart === 1,
     flavors: parseFlavors(s.flavors),
   };
 }
@@ -2715,6 +3203,8 @@ function flavorPromptSection(flavors: string[]): string[] {
 // ------------------------------------------------------- actions
 
 const okResponse = z.object({ ok: z.literal(true) });
+// beginTopic の応答: 主張できたかどうかで ok が true / false の両方を取り得る。
+const beginTopicResponse = z.object({ ok: z.boolean() });
 
 // アバター連携の自己紹介（getAvatarReceiverInfo）の応答スキーマ。
 // 連携の約束事として固定の値を返す（値はリテラルで固定する）。
@@ -3573,6 +4063,8 @@ export const Actions = {
       batch_id: z.string().trim().min(1).max(100).optional(),
     }),
     response: z.object({ id: z.number(), name: z.string(), display_name: z.string(), is_new: z.boolean(), has_image: z.boolean() }),
+    // 画像取得の内部アドレス遮断で、取得先ホスト名の名前解決（privileged）を使う。
+    privileged: [privileged.resolveHostAddresses],
     async handler(ctx, args) {
       const db = getDb(ctx);
       // 実体は共通処理 importOneProfile（importCharactersBulk と共用）。
@@ -3624,6 +4116,8 @@ export const Actions = {
         }),
       ),
     }),
+    // 画像取得の内部アドレス遮断で、取得先ホスト名の名前解決（privileged）を使う。
+    privileged: [privileged.resolveHostAddresses],
     async handler(ctx, args) {
       const db = getDb(ctx);
       const batchId = args.batch_id ?? `import-${Date.now()}`;
@@ -4718,8 +5212,40 @@ export const Actions = {
     },
   }),
 
+  beginTopic: defineAction({
+    description: "「自動」の仲介用: 議題の生成に着手したことを原子的に主張します。準備中の対象について、最初に主張できた仲介だけが ok=true を受け取り生成に進めます。既に主張済み（別の仲介が生成中）・準備中でない場合は ok=false で、生成も投稿もせず終了してください（failTopic も呼ばないでください）。見張りが生成中の議題を「止まっている」と誤認して蹴り直したり二重投稿したりしないための仕組みです（返信の beginRequest と同じ考え方）。",
+    request: z.object({
+      target_kind: z.enum(["chat", "group"]),
+      target_id: z.number().int().positive(),
+    }),
+    response: beginTopicResponse,
+    async handler(ctx, args): Promise<z.infer<typeof beginTopicResponse>> {
+      const db = getDb(ctx);
+      const startedAt = await topicPendingStartedAt(db, args.target_kind, args.target_id);
+      if (startedAt <= 0) return { ok: false };
+      const key = topicClaimedKey(args.target_kind, args.target_id);
+      const now = String(Date.now());
+      // 原子的な主張: 未主張（空）の時だけ、状態を条件にした UPDATE で
+      // 自分の着手時刻へ書き換える。書き換えられた行があれば主張成功。
+      const res = await db
+        .update(schema.meta)
+        .set({ value: now })
+        .where(and(eq(schema.meta.key, key), eq(schema.meta.value, "")))
+        .returning({ key: schema.meta.key });
+      if (res.length) return { ok: true };
+      // 主張キーの行自体が無い（この仕組みより前に立てられた準備中など）場合は、
+      // 行の挿入そのものを主張とする（競合時は onConflictDoNothing で負ける）。
+      const ins = await db
+        .insert(schema.meta)
+        .values({ key, value: now })
+        .onConflictDoNothing({ target: schema.meta.key })
+        .returning({ key: schema.meta.key });
+      return { ok: ins.length > 0 };
+    },
+  }),
+
   getTopicContext: defineAction({
-    description: "「自動」の仲介用: 議題を作るための材料（参加キャラの設定抜粋・プロフィール項目の抜き出し・関係の抜粋・直近の会話履歴・今日の日付・このアプリで最近起きた出来事）と投下可否を返します。議題の準備中でない対象や、返信待ち・生成中の対象には ok=false を返します。",
+    description: "「自動」の仲介用: 議題を作るための材料（参加キャラの設定抜粋・プロフィール項目の抜き出し・関係の抜粋・直近の会話履歴・今日の日付・このアプリで最近起きた出来事・その会話のフレーバー）と投下可否を返します。議題の準備中でない対象や、返信待ち・生成中の対象には ok=false を返します。",
     request: z.object({
       target_kind: z.enum(["chat", "group"]),
       target_id: z.number().int().positive(),
@@ -4740,6 +5266,7 @@ export const Actions = {
       ),
       history: z.array(z.string()),
       events: z.array(z.string()),
+      flavors: z.array(z.string()),
     }),
     async handler(ctx, args) {
       const db = getDb(ctx);
@@ -4753,6 +5280,7 @@ export const Actions = {
         participants: [] as { name: string; settings_excerpt: string; relation_excerpt: string; profile_items: string[] }[],
         history: [] as string[],
         events: [] as string[],
+        flavors: [] as string[],
       });
       if (!(await isTopicPending(db, args.target_kind, args.target_id))) return ng("not_pending");
       const auto = (await getMeta(db, `topic_auto:${args.target_kind}:${args.target_id}`)) === "1";
@@ -4760,11 +5288,16 @@ export const Actions = {
       let targetName = "";
       const participants: { name: string; settings_excerpt: string; relation_excerpt: string; profile_items: string[] }[] = [];
       const history: string[] = [];
+      // フレーバー（ローカル改善#6の改訂、2026-11-27）: その会話に指定された
+      // フレーバーを議題の材料へ追加する。1対1は characters.flavors、
+      // グループは groups.flavors。未指定なら空配列のまま（従来の材料と同一）。
+      let flavors: string[] = [];
       if (args.target_kind === "chat") {
         const rows = await db.select().from(schema.characters).where(eq(schema.characters.id, args.target_id));
         const c = rows[0];
         if (!c) return ng("not_found");
         targetName = c.displayName;
+        flavors = parseFlavors(c.flavors);
         participants.push({
           name: c.displayName,
           settings_excerpt: c.settingsText.slice(0, 1200),
@@ -4784,6 +5317,7 @@ export const Actions = {
         const g = rows[0];
         if (!g || g.status !== "active") return ng("not_found");
         targetName = g.name;
+        flavors = parseFlavors(g.flavors);
         const memberRows = await groupMemberRows(db, g.id);
         for (const m of memberRows) {
           if (m.character) {
@@ -4824,7 +5358,7 @@ export const Actions = {
       if (impState === "done" && impFinished > 0 && now - impFinished < 14 * 24 * 3600 * 1000 && impNote) {
         events.push(`最近、アバター管理からの一括取り込みが行われた（${impNote.slice(0, 120)}）`);
       }
-      return { ok: true, reason: "", auto, target_name: targetName, today: todayJstLabel(), participants, history, events };
+      return { ok: true, reason: "", auto, target_name: targetName, today: todayJstLabel(), participants, history, events, flavors };
     },
   }),
 
@@ -4883,22 +5417,36 @@ export const Actions = {
         ];
         await db.batch(stmts);
       }
-      await setMeta(db, `topic_pending:${args.target_kind}:${args.target_id}`, "");
+      await clearTopicState(db, args.target_kind, args.target_id);
       const requestId = await finishPost(ctx, db, args.target_kind, args.target_id);
       return { ok: true, seq, request_id: requestId };
     },
   }),
 
   failTopic: defineAction({
-    description: "「自動」の仲介用: 議題の投下を断念した時に呼び、「議題を準備中」の表示を消します。",
+    description: "「自動」の仲介用: 議題の投下を断念した時に呼び、「議題を準備中」の表示を消します。reason（諦めた理由の短い語）と detail（経緯）が渡され、準備中だった場合は全体ログへ「議題の生成に失敗」として理由付きで記録します（無言で消さないため）。",
     request: z.object({
       target_kind: z.enum(["chat", "group"]),
       target_id: z.number().int().positive(),
+      reason: z.string().trim().max(100).optional(),
+      detail: z.string().trim().max(2000).optional(),
     }),
     response: okResponse,
     async handler(ctx, args): Promise<z.infer<typeof okResponse>> {
       const db = getDb(ctx);
-      await setMeta(db, `topic_pending:${args.target_kind}:${args.target_id}`, "");
+      const wasPending = (await topicPendingStartedAt(db, args.target_kind, args.target_id)) > 0;
+      if (wasPending) {
+        const reason = args.reason?.trim() || "aborted";
+        const detail = args.detail?.trim();
+        await failTopicPending(
+          db,
+          args.target_kind,
+          args.target_id,
+          `議題の生成に失敗しました（理由: ${reason}）。仲介が議題の生成を断念しました。${detail ? `\n詳細: ${detail}` : ""}`,
+        );
+      } else {
+        await clearTopicState(db, args.target_kind, args.target_id);
+      }
       ctx.invalidateQueries();
       return { ok: true };
     },
@@ -5825,7 +6373,7 @@ export const Actions = {
   }),
 
   createSchedule: defineAction({
-    description: "自動生成のスケジュールを新規作成します。対象は既存グループ（なりきり設定が有効なグループは選べません）か、毎回新規チャット（カテゴリからランダム抽選。カテゴリ未指定の場合は全キャラから抽選）のどちらかです。",
+    description: "自動生成のスケジュールを新規作成します。対象は既存グループ（なりきり設定が有効なグループは選べません）か、毎回新規チャット（カテゴリからランダム抽選。カテゴリ未指定の場合は全キャラから抽選）のどちらかです。「冒頭に議題を自動投稿」がオンの場合は、発火時に通常の冒頭生成の代わりに、「自動」ボタンと同じ議題の生成・投稿を行い、そこから掛け合いを始めます。",
     request: scheduleInputSchema,
     response: z.object({ id: z.number() }),
     async handler(ctx, args) {
@@ -5844,7 +6392,7 @@ export const Actions = {
   }),
 
   updateSchedule: defineAction({
-    description: "自動生成のスケジュールの設定を保存します（名前・有効/無効・頻度・曜日・時刻・対象・カテゴリ・人数・ゲスト/モブ/ナレーション・フレーバー）。発火済みスロットの記録（last_fired_slot）と前回生成グループは保持されます。",
+    description: "自動生成のスケジュールの設定を保存します（名前・有効/無効・頻度・曜日・時刻・対象・カテゴリ・人数・ゲスト/モブ/ナレーション・冒頭に議題を自動投稿・フレーバー）。発火済みスロットの記録（last_fired_slot）と前回生成グループは保持されます。",
     request: scheduleInputSchema.extend({ id: z.number().int().positive() }),
     response: okResponse,
     async handler(ctx, args): Promise<z.infer<typeof okResponse>> {

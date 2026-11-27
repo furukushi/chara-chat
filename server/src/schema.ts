@@ -344,6 +344,12 @@ export const schedules = sqliteTable("schedules", {
   // ナレーション（設計書 v3.1）: 新規チャット型でのみ意味を持ち、作成される
   // グループの allow_narration へ引き継ぐ。既存グループ型はグループ側の設定に従う。
   allowNarration: integer("allow_narration").notNull().default(0),
+  // 冒頭に議題を自動投稿（ローカル改善: 上流リポジトリには無い）: 1 の時、
+  // 発火時は通常の冒頭生成（origin=auto の返信リクエスト作成）の代わりに、
+  // 「自動」ボタンと同じ議題の処理（kickTopic）を行い、議題の投稿から
+  // 掛け合いを始める。既存グループ型・新規チャット型のどちらにも効く。
+  // 既定は 0（従来通り通常の冒頭生成）。
+  autoTopicStart: integer("auto_topic_start").notNull().default(0),
   // 旧「履歴を使う」設定（v2.0）: 設計書 v3.2 でスケジュール側の選択肢は廃止され、
   // 履歴の使用設定はチャット／グループ側へ移った（新規チャット型は毎回まっさら、
   // 既存グループ型はグループ自身の設定に従う）。use_history カラムは DB

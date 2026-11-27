@@ -482,6 +482,7 @@ export const TEXTS = {
     guestsOn: "ゲストあり",
     mobsOn: "モブあり",
     narrationOn: "ナレーションあり",
+    topicStartOn: "冒頭に議題を自動投稿",
     sectionAria: "スケジューリング",
     heading: "スケジューリング",
     create: SCHEDULE_CREATE,
@@ -534,6 +535,9 @@ export const TEXTS = {
     membersLabel: "人数",
     minMembersAria: "人数の最小",
     maxMembersAria: "人数の最大",
+    autoTopicStartLabel: "冒頭に議題を自動投稿",
+    autoTopicStartNote:
+      "オンにすると、発火したとき通常の冒頭生成の代わりに、会話の冒頭で「自動」ボタンが押されたときと同じ処理を行います。議題を生成して投稿し、そこから掛け合いが始まります。",
     guestMobNarrationHeading: "ゲスト・モブ・ナレーション（作成されるグループに引き継がれます）",
     flavorsHeading: "フレーバー（作成されるグループに引き継がれます）",
     flavorsNote:
