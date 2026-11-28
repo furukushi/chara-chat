@@ -94,6 +94,12 @@ export const characters = sqliteTable("characters", {
   // レビューの詳細は reviews.review_kind = "auto" の行を参照。
   // このテーブルでしか使わないため、共通ファクトリへは寄せずここへ直接書く。
   autoReview: integer("auto_review").notNull().default(0),
+  // レビューモードの保持（2026-11-28）: チャット画面のレビューモード ON/OFF を
+  // チャットごとに保持する。一度 ON にしたら、利用者が OFF にするまで ON の
+  // まま（画面を離れて戻っても維持される）。送信時の自動レビューの起動判定は
+  // 投稿アクションがこの保存値で行う。groups にも同じカラムがあるため、
+  // 共通ファクトリへは寄せず両テーブルへ同じ定義を直接書く。
+  reviewMode: integer("review_mode").notNull().default(0),
   createdAt: createdAtCol(),
 });
 
@@ -181,6 +187,9 @@ export const groups = sqliteTable("groups", {
   // 要約したタイトルがグループ名として代入され直す。作成時とグループ設定
   // （名前変更シート）で切り替える。既定は 0（従来通り名前は固定）。
   autoTitle: integer("auto_title").notNull().default(0),
+  // レビューモードの保持（2026-11-28）: characters.review_mode と同じ意味。
+  // グループごとに保持し、ON のまま画面を離れて戻っても維持される。
+  reviewMode: integer("review_mode").notNull().default(0),
   // 旧「背景情報」（設計書 v2.0 / C）: フレーバー化に伴い、値は migration
   // 0021 で flavors の1件目へ移行済み。このカラムは移行時点の値を保持する
   // だけで、読み書きは一切されない（characters.category_id と同じ扱い）。

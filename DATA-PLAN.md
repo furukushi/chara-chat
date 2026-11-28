@@ -573,4 +573,4 @@
 
 ## GitHub リポジトリ側のマイグレーション番号の対応（2026-11-28、push 時の付け替え）
 
-- リポジトリ側では、PR #6 のマイグレーションが 0025_add_auto_topic_start_to_schedules として既に入っている。そのためライブ側の番号とは次のようにずれる。リポジトリ 0026_add_auto_review ＝ ライブ 0025、リポジトリ 0027_add_prompt_and_response_to_reviews ＝ ライブ 0026、リポジトリ 0025_add_auto_topic_start_to_schedules ＝ ライブ 0027（SQL の内容は同一）。journal の idx はリポジトリ側で 0025→idx24、0026→idx25、0027→idx26 とし、when はライブ側の値をそのまま使う。
+- リポジトリ側では、PR #6 のマイグレーションが 0025_add_auto_topic_start_to_schedules として既に入っている。そのためライブ側の番号とは次のようにずれる。リポジトリ 0026_add_auto_review ＝ ライブ 0025、リポジトリ 0027_add_prompt_and_response_to_reviews ＝ ライブ 0026、リポジトリ 0025_add_auto_topic_start_to_schedules ＝ ライブ 0027（SQL の内容は同一）。journal の idx はリポジトリ側で 0025→idx24、0026→idx25、0027→idx26 とし、when はライブ側の値をそのまま使う。 リポジトリ 0028_add_review_mode_persistence ＝ ライブ 0028（番号は一致）。

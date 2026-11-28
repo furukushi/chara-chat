@@ -365,6 +365,7 @@ export const TEXTS = {
     registeredNotice: REVIEW_REGISTERED,
     submitFailed: REVIEW_FAILED,
     reviewModeNote: "レビューモードが有効です。メッセージ生成前にレビューを開始します。",
+    reviewModeSaveFailed: "レビューモードの切り替えを保存できませんでした。表示を元の状態に戻しました。",
     chatBanner: "レビューモード中です。キャラの発言をタップして選ぶと、設定と違う点を指摘できます。",
     groupBanner:
       "レビューモード中です。キャラの発言をタップして選ぶと、そのキャラの設定への指摘ができます。",
@@ -627,6 +628,9 @@ export const TEXTS = {
       "まだログがありません。チャットで送信したり、設定を変更したりすると、ここに記録されます。",
     emptyForKind: (label: string) => `「${label}」のログはまだありません。`,
     toggleAria: (title: string, open: boolean) => `ログ「${title}」の本文を${open ? "閉じる" : "開く"}`,
+    exportButton: "全てのログをファイルでダウンロード",
+    exportFailed: "ログファイルの作成に失敗しました",
+    exportHeading: (count: number, when: string) => `全体ログ（全${count}件、${when} 時点）`,
   },
 
   // ------------------------------------------------------------ キャラ取り込みシート
@@ -749,11 +753,13 @@ export const TEXTS = {
 
   // ------------------------------------------------------------ 1対1チャット
   chat: {
-    clearHistory: "履歴クリア",
+    settings: "設定",
+    settingsAria: "チャット設定",
     export: "全文出力",
     historyToggleAria: "過去の履歴を使うかどうかを切り替える",
-    historyOn: "履歴を使う",
-    historyOff: "履歴を使わない",
+    historyOn: "履歴 ON",
+    historyOff: "履歴 OFF",
+    historyOffNote: "履歴がオフのため、生成では過去の会話を参照しません。",
     emptyLine1: "まだ会話がありません。下の入力欄から話しかけてみてください。",
     emptyLine2: "送信すると、自動で返信が届きます。",
     cancelSend: "送信を取り消す",
@@ -773,6 +779,14 @@ export const TEXTS = {
     clearConfirmTitle: "履歴をクリアしますか？",
     clearConfirmBody: "このキャラクターとの会話ログが全て消えます。元には戻せません。",
     clearConfirm: "クリアする",
+  },
+
+  // ------------------------------------------------------------ 1対1チャットの設定メニュー
+  chatMenu: {
+    menuAria: "チャット設定メニュー",
+    title: (name: string) => `${name}の設定`,
+    clearHistory: "チャット履歴を削除",
+    clearHistoryDesc: "このキャラクターとの会話ログを全て消します（元には戻せません）",
   },
 
   // ------------------------------------------------------------ なりきり設定シート

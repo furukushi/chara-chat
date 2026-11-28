@@ -369,8 +369,10 @@ async function markReviewNoChange(db: Db, rev: ReviewRow, intent: string): Promi
 // チャット画面でレビューモードを ON にしている状態で利用者が手動で
 // メッセージを送信すると、その送信に対して自動レビューが返信生成の「前」に
 // 実行され、完了してから更新後の設定で返信が生成される。レビューモードが
-// OFF の送信では自動レビューは走らない。投稿アクションが review_mode を
-// 受け取り、registerPreAutoReviews へ渡す。
+// OFF の送信では自動レビューは走らない。レビューモードの ON/OFF は
+// チャットごとに DB へ保持され（characters / groups の review_mode、
+// setReviewMode で保存）、投稿アクションはその保存値で起動判定して
+// registerPreAutoReviews へ渡す（2026-11-28: 画面内だけの状態から保持方式へ変更）。
 // 旧方式は返信生成の完了後にその回の会話を材料にレビューしていたが、設定が
 // 直らないまま会話が続いてしまうため、生成前方式へ変更した。
 // - 判断材料は、今回送られた利用者のメッセージだけ。生成済みの返信は
@@ -650,9 +652,13 @@ async function deletePendingAutoReviews(db: Db, requestId: number) {
 }
 
 /** 自動レビュー1件を登録する。「生成リクエスト＋キャラ」で既に登録済みなら何もしない
- * （部分ユニーク索引 reviews_request_character_unique への onConflictDoNothing で
- * 二重登録を防ぐ。drizzle-orm 0.45 の SQLite insert が target + where（部分索引の
- * 条件）を対応していることを型定義で確認済み）。
+ * （登録前に存在確認をして二重登録を防ぐ。最終的な保証は部分ユニーク索引
+ * reviews_request_character_unique）。
+ * 以前は onConflictDoNothing({ target, where }) で一本化していたが、drizzle-orm
+ * 0.45.2 が生成する SQL は「ON CONFLICT (...) DO NOTHING WHERE ...」という
+ * SQLite では文法エラーになる並びで、登録が常に失敗していた（呼び出し側が
+ * 例外を握り潰すため無言で自動レビューが走らなかった。2026-11-28 に実測で確認し、
+ * 存在確認＋通常挿入へ戻した）。
  * feedback は通常は AUTO_REVIEW_FEEDBACK、なりきり時は AUTO_REVIEW_ROLEPLAY_FEEDBACK。 */
 async function insertAutoReview(
   db: Db,
@@ -663,24 +669,23 @@ async function insertAutoReview(
   batchText: string,
   feedback: string = AUTO_REVIEW_FEEDBACK,
 ) {
-  await db
-    .insert(schema.reviews)
-    .values({
-      characterId: c.id,
-      reviewKind: "auto",
-      targetKind,
-      targetId,
-      messageId: null,
-      messageBody: "",
-      feedback,
-      requestId: req.id,
-      batchText,
-      status: "pending",
-    })
-    .onConflictDoNothing({
-      target: [schema.reviews.requestId, schema.reviews.characterId],
-      where: sql`${schema.reviews.requestId} IS NOT NULL`,
-    });
+  const existing = await db
+    .select({ id: schema.reviews.id })
+    .from(schema.reviews)
+    .where(and(eq(schema.reviews.requestId, req.id), eq(schema.reviews.characterId, c.id)));
+  if (existing.length) return;
+  await db.insert(schema.reviews).values({
+    characterId: c.id,
+    reviewKind: "auto",
+    targetKind,
+    targetId,
+    messageId: null,
+    messageBody: "",
+    feedback,
+    requestId: req.id,
+    batchText,
+    status: "pending",
+  });
 }
 
 /**
@@ -4283,6 +4288,9 @@ export const Actions = {
       }),
       // 履歴の使用設定（設計書 v3.2）: false の間は生成に過去の履歴を含めない。
       use_history: z.boolean(),
+      // レビューモードの保持状態（2026-11-28）: チャットごとに保存された
+      // ON/OFF。画面はこれを初期値として表示し、切り替えは setReviewMode で保存する。
+      review_mode: z.boolean(),
       // フレーバー: このチャットで指定されているフレーバー一式（貼られた
       // テキストそのままの配列）。生成時は全件が絶対のルールとして含まれる。
       flavors: z.array(z.string()),
@@ -4346,6 +4354,7 @@ export const Actions = {
           theme_color: c.themeColor,
         },
         use_history: c.useHistory === 1,
+        review_mode: c.reviewMode === 1,
         flavors: parseFlavors(c.flavors),
         messages: msgs.map((m) => ({
           id: m.id,
@@ -4370,13 +4379,10 @@ export const Actions = {
   }),
 
   postMessage: defineAction({
-    description: "1対1チャットに利用者の発言を投稿します。保存と同一アクションの中で返信リクエストを作成・統合し、signalAll と同一の共通経路（runSignalAll）で生成の仲介を開始します（v1.4: 自動返信 / v1.4.1: 起動経路を signalAll と統一）。戻し下書きがあれば消去します。review_mode が true（送信時にチャット画面のレビューモードが ON）の時は、返信生成の前に自動レビューが登録されます。",
+    description: "1対1チャットに利用者の発言を投稿します。保存と同一アクションの中で返信リクエストを作成・統合し、signalAll と同一の共通経路（runSignalAll）で生成の仲介を開始します（v1.4: 自動返信 / v1.4.1: 起動経路を signalAll と統一）。戻し下書きがあれば消去します。このチャットに保持されたレビューモードが ON の時は、返信生成の前に自動レビューが登録されます（起動判定は保持値 characters.review_mode で行います）。",
     request: z.object({
       character_id: z.number().int().positive(),
       body: z.string().trim().min(1).max(2000),
-      // 送信時にチャット画面のレビューモードが ON だったか。ON の送信では
-      // 返信生成の前に自動レビューが実行される（起動条件はこれだけ）。
-      review_mode: z.boolean().default(false),
     }),
     response: z.object({ seq: z.number(), request_id: z.number() }),
     async handler(ctx, args) {
@@ -4405,7 +4411,8 @@ export const Actions = {
           relatedType: "character",
           relatedId: c.id,
         },
-        { reviewMode: args.review_mode },
+        // 自動レビューの起動判定は、このチャットに保持されたレビューモードで行う。
+        { reviewMode: c.reviewMode === 1 },
       );
       return { seq, request_id: requestId };
     },
@@ -5136,6 +5143,8 @@ export const Actions = {
       allow_narration: z.boolean(),
       // 履歴の使用設定（設計書 v3.2）: false の間は生成に過去の履歴を含めない。
       use_history: z.boolean(),
+      // レビューモードの保持状態（2026-11-28）: 1対1と同じくグループごとに保存された ON/OFF。
+      review_mode: z.boolean(),
       members: z.array(
         z.object({
           character_id: z.number(),
@@ -5249,6 +5258,7 @@ export const Actions = {
         allow_mobs: g.allowMobs === 1,
         allow_narration: g.allowNarration === 1,
         use_history: g.useHistory === 1,
+        review_mode: g.reviewMode === 1,
         members,
         messages: msgs.map((m) => ({
           id: m.id,
@@ -5460,6 +5470,26 @@ export const Actions = {
     },
   }),
 
+  setReviewMode: defineAction({
+    description: "1対1チャット／グループチャットのレビューモード ON/OFF を保存します（2026-11-28）。レビューモードはチャットごとに保持され、一度 ON にしたら利用者が OFF にするまで ON のままです（画面を離れて戻っても維持されます）。送信時の自動レビューの起動判定は、投稿アクションがこの保存値を見て行います。",
+    request: z.object({
+      target_kind: z.enum(["chat", "group"]),
+      target_id: z.number().int().positive(),
+      review_mode: z.boolean(),
+    }),
+    response: okResponse,
+    async handler(ctx, args): Promise<z.infer<typeof okResponse>> {
+      const db = getDb(ctx);
+      const t = await getTargetOrThrow(db, args.target_kind, args.target_id, "解散したグループの設定は変更できません");
+      await db
+        .update(t.table)
+        .set({ reviewMode: args.review_mode ? 1 : 0 })
+        .where(eq(t.idCol, t.row.id));
+      ctx.invalidateQueries();
+      return { ok: true };
+    },
+  }),
+
   markChatRead: defineAction({
     description: "1対1チャットを、その時点の最新発言まで既読にします。会話画面を開いた時にクライアントが呼び、一覧へ戻った直後から新着バッジが消えた状態で表示されるようにします。",
     request: z.object({ character_id: z.number().int().positive() }),
@@ -5535,13 +5565,10 @@ export const Actions = {
   }),
 
   postGroupPrompt: defineAction({
-    description: "グループチャットに話題・指示（プロンプト）を投稿します。保存と同一アクションの中で掛け合いリクエストを作成・統合し、signalAll と同一の共通経路（runSignalAll）で生成の仲介を開始します（v1.4: 自動生成 / v1.4.1: 起動経路を signalAll と統一）。戻し下書きがあれば消去します。なりきり設定が有効な時は、投稿はそのキャラの発言（利用者本人が書いた発言として記録）になり、「なりきりキャラの台詞」の設定にかかわらずAIが返信するリクエストを作成します（v1.19 / v1.20）。「自分だけが演じる」で他の参加キャラがいない場合だけ、AIが書けるキャラがいないためリクエストは作成しません。review_mode が true（送信時にチャット画面のレビューモードが ON）の時は、返信生成の前に自動レビューが登録されます（なりきり時はなりきり中のキャラだけが対象で、リクエストを作成しない場合も単独で実行されます）。",
+    description: "グループチャットに話題・指示（プロンプト）を投稿します。保存と同一アクションの中で掛け合いリクエストを作成・統合し、signalAll と同一の共通経路（runSignalAll）で生成の仲介を開始します（v1.4: 自動生成 / v1.4.1: 起動経路を signalAll と統一）。戻し下書きがあれば消去します。なりきり設定が有効な時は、投稿はそのキャラの発言（利用者本人が書いた発言として記録）になり、「なりきりキャラの台詞」の設定にかかわらずAIが返信するリクエストを作成します（v1.19 / v1.20）。「自分だけが演じる」で他の参加キャラがいない場合だけ、AIが書けるキャラがいないためリクエストは作成しません。このグループに保持されたレビューモードが ON の時は、返信生成の前に自動レビューが登録されます（起動判定は保持値 groups.review_mode で行います。なりきり時はなりきり中のキャラだけが対象で、リクエストを作成しない場合も単独で実行されます）。",
     request: z.object({
       group_id: z.number().int().positive(),
       body: z.string().trim().min(1).max(2000),
-      // 送信時にチャット画面のレビューモードが ON だったか。ON の送信では
-      // 返信生成の前に自動レビューが実行される（起動条件はこれだけ）。
-      review_mode: z.boolean().default(false),
     }),
     response: z.object({ seq: z.number(), request_id: z.number() }),
     async handler(ctx, args) {
@@ -5616,12 +5643,12 @@ export const Actions = {
           // 前に登録する（finishPost の reviewMode と同じ扱い）。対象は
           // なりきり中のキャラだけ（registerPreAutoReviews のグループ分岐が
           // なりきりを見て切り替える）。
-          if (requestId) await registerPreAutoReviews(db, requestId, args.review_mode);
+          if (requestId) await registerPreAutoReviews(db, requestId, g.reviewMode === 1);
           // 返信リクエストを作成しない場合（1人グループ＋「自分だけが演じる」）
           // でも、レビューモード ON の送信なら自動レビューは実行する: 完了済み
           // リクエストを錨にして単独で登録する。
           let standaloneReview = false;
-          if (!requestId && args.review_mode) {
+          if (!requestId && g.reviewMode === 1) {
             standaloneReview = await registerStandaloneRoleplayReview(db, g, rc, seq);
           }
           ctx.invalidateQueries();
@@ -5655,7 +5682,8 @@ export const Actions = {
           relatedType: "group",
           relatedId: g.id,
         },
-        { reviewMode: args.review_mode },
+        // 自動レビューの起動判定は、このグループに保持されたレビューモードで行う。
+        { reviewMode: g.reviewMode === 1 },
       );
       return { seq, request_id: requestId };
     },
@@ -7410,6 +7438,40 @@ export const Actions = {
           id: r.id,
           kind: r.kind,
           title: r.title,
+          created_at: r.createdAt.toISOString(),
+        }));
+      return { logs };
+    },
+  }),
+
+  exportAppLogs: defineAction({
+    description: "全体ログの全件（保持上限の最新100件、新しい順）を見出しと本文つきで返します。全体ログ画面の「全てのログをファイルでダウンロード」が使い、クライアント側で1つのテキストファイルに整形して保存します。種別の絞り込みは行わず、保持している全てを返します。",
+    request: z.object({}),
+    response: z.object({
+      logs: z.array(
+        z.object({
+          id: z.number(),
+          kind: z.string(),
+          title: z.string(),
+          body: z.string(),
+          created_at: z.string(),
+        }),
+      ),
+    }),
+    async handler(ctx) {
+      const db = getDb(ctx);
+      const rows = await db
+        .select({ id: schema.appLogs.id, kind: schema.appLogs.kind, title: schema.appLogs.title, body: schema.appLogs.body, createdAt: schema.appLogs.createdAt })
+        .from(schema.appLogs)
+        .orderBy(asc(schema.appLogs.id));
+      const logs = [...rows]
+        .reverse()
+        .slice(0, APP_LOG_LIMIT)
+        .map((r) => ({
+          id: r.id,
+          kind: r.kind,
+          title: r.title,
+          body: r.body,
           created_at: r.createdAt.toISOString(),
         }));
       return { logs };
