@@ -75,6 +75,15 @@ function formatClock(iso: string): string {
   return d.toLocaleTimeString("ja-JP", { hour: "2-digit", minute: "2-digit" });
 }
 
+// ひらがなとカタカナを区別しない検索用に、ひらがなをカタカナへ寄せて
+// 小文字化した文字列を返す。検索語とキャラ名の両方に適用して照合すると、
+// ひらがなの検索語でもカタカナの名前が一致し、その逆も一致する。
+function normalizeKanaForSearch(s: string): string {
+  return s
+    .toLowerCase()
+    .replace(/[ぁ-ゖ]/g, (ch) => String.fromCharCode(ch.charCodeAt(0) + 0x60));
+}
+
 // スマホ（タッチ主体の端末）かどうか。PC では Enter で送信するが、スマホでは
 // Enter は改行にし、送信は送信ボタンで行う（利用者の要望）。判定は
 // pointer: coarse（主ポインタがタッチ）で行い、タッチ対応 PC でもマウス・
@@ -212,7 +221,12 @@ function Avatar({
   );
 }
 
-function StatusBadge({ status }: { status: string }) {
+function StatusBadge({ status, reviewing }: { status: string; reviewing?: boolean }) {
+  // 自動レビュー実行中は「返信待ち」の代わりに「レビュー中」（青色）を示す。
+  // レビューが終わって返信生成へ移ると reviewing が false になり、従来の
+  // 表示へ戻る。返信生成が行われない単独レビュー（status="none"）でも出す。
+  if (reviewing && status !== "processing" && status !== "failed")
+    return <span className="rounded-full px-2 py-0.5 text-xs font-bold" style={{ background: "var(--info-soft)", color: "var(--info)" }}>{T.status.reviewing}</span>;
   if (status === "pending")
     return <span className="rounded-full px-2 py-0.5 text-xs font-bold" style={{ background: "var(--accent-soft)", color: "var(--gold)" }}>{T.status.pending}</span>;
   if (status === "processing")
@@ -223,8 +237,20 @@ function StatusBadge({ status }: { status: string }) {
 }
 
 function RequestBanner({ request, isGroup }: { request: RequestInfo; isGroup?: boolean }) {
-  const now = useNow(request.status === "pending" || request.status === "processing");
-  if (request.status === "none") return null;
+  const now = useNow(request.status === "pending" || request.status === "processing" || request.reviewing);
+  if (request.status === "none") {
+    // 進行中のリクエストが無くても、自動レビューだけが実行中（返信生成が
+    // 行われないなりきり投稿の単独レビュー）の間は「レビュー中」を出す。
+    if (!request.reviewing) return null;
+    const elapsed = request.requested_at
+      ? elapsedSecondsSince(request.requested_at, now)
+      : request.elapsed_seconds;
+    return (
+      <div className="mx-3 mt-2 rounded-xl px-3 py-2 text-sm" style={{ background: "var(--accent-soft)", color: "var(--text)" }} role="status">
+        {T.requestBanner.reviewing(formatElapsed(elapsed))}
+      </div>
+    );
+  }
   if (request.status === "failed") {
     return (
       <div className="mx-3 mt-2 rounded-xl px-3 py-2 text-sm" style={{ background: "var(--accent-soft)", color: "var(--danger)" }} role="status">
@@ -242,7 +268,9 @@ function RequestBanner({ request, isGroup }: { request: RequestInfo; isGroup?: b
     <div className="mx-3 mt-2 rounded-xl px-3 py-2 text-sm" style={{ background: "var(--accent-soft)", color: "var(--text)" }} role="status">
       {request.status === "processing"
         ? T.requestBanner.generating(isGroup ? T.requestBanner.groupWord : T.requestBanner.replyWord, formatElapsed(elapsed))
-        : T.requestBanner.waiting(isGroup ? T.requestBanner.groupWord : T.requestBanner.replyWord, formatElapsed(elapsed))}
+        : request.reviewing
+          ? T.requestBanner.reviewing(formatElapsed(elapsed))
+          : T.requestBanner.waiting(isGroup ? T.requestBanner.groupWord : T.requestBanner.replyWord, formatElapsed(elapsed))}
     </div>
   );
 }
@@ -388,8 +416,8 @@ function AutoTopicSheet({
     onError: (e) => setError(errMsg(e, T.common.saveFailed)),
   });
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4" style={{ background: "rgba(10,6,20,0.55)" }} role="dialog" aria-modal="true" aria-label={T.autoTopic.sheetAria}>
-      <div className="max-h-[92vh] w-full max-w-md overflow-y-auto rounded-3xl p-5" style={{ background: "var(--surface)" }}>
+    <div className="sheet-overlay fixed inset-0 z-50 flex items-center justify-center p-4" style={{ background: "rgba(10,6,20,0.55)" }} role="dialog" aria-modal="true" aria-label={T.autoTopic.sheetAria}>
+      <div className="max-h-full w-full max-w-md overflow-y-auto rounded-3xl p-5" style={{ background: "var(--surface)" }}>
         <h2 className="font-display text-lg font-bold" style={{ color: "var(--text)" }}>{T.autoTopic.sheetTitle}</h2>
         <p className="mt-1 text-sm" style={{ color: "var(--dim)" }}>{targetName}</p>
         <p className="mt-2 text-sm leading-relaxed" style={{ color: "var(--dim)" }}>
@@ -535,8 +563,8 @@ function ExportSheet({
     }
   };
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4" style={{ background: "rgba(10,6,20,0.55)" }} role="dialog" aria-modal="true" aria-label={title}>
-      <div className="flex max-h-[92vh] w-full max-w-md flex-col rounded-3xl p-5" style={{ background: "var(--surface)" }}>
+    <div className="sheet-overlay fixed inset-0 z-50 flex items-center justify-center p-4" style={{ background: "rgba(10,6,20,0.55)" }} role="dialog" aria-modal="true" aria-label={title}>
+      <div className="flex max-h-full w-full max-w-md flex-col rounded-3xl p-5" style={{ background: "var(--surface)" }}>
         <div className="flex items-start justify-between gap-3">
           <h2 className="font-display text-lg font-bold" style={{ color: "var(--text)" }}>{title}</h2>
           <button
@@ -606,8 +634,8 @@ function ConfirmSheet({
   busy?: boolean;
 }) {
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4" style={{ background: "rgba(10,6,20,0.55)" }} role="dialog" aria-modal="true" aria-label={title}>
-      <div className="max-h-[92vh] w-full max-w-md overflow-y-auto rounded-3xl p-5" style={{ background: "var(--surface)" }}>
+    <div className="sheet-overlay fixed inset-0 z-50 flex items-center justify-center p-4" style={{ background: "rgba(10,6,20,0.55)" }} role="dialog" aria-modal="true" aria-label={title}>
+      <div className="max-h-full w-full max-w-md overflow-y-auto rounded-3xl p-5" style={{ background: "var(--surface)" }}>
         <h2 className="font-display text-lg font-bold" style={{ color: "var(--text)" }}>{title}</h2>
         <p className="mt-2 text-sm whitespace-pre-wrap" style={{ color: "var(--dim)" }}>{body}</p>
         <div className="mt-5 flex gap-3">
@@ -768,8 +796,8 @@ function ImageEditSheet({
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4" style={{ background: "rgba(10,6,20,0.55)" }} role="dialog" aria-modal="true" aria-label={T.imageEdit.title(characterName)}>
-      <div className="max-h-[92vh] w-full max-w-md overflow-y-auto rounded-3xl p-5" style={{ background: "var(--surface)" }}>
+    <div className="sheet-overlay fixed inset-0 z-50 flex items-center justify-center p-4" style={{ background: "rgba(10,6,20,0.55)" }} role="dialog" aria-modal="true" aria-label={T.imageEdit.title(characterName)}>
+      <div className="max-h-full w-full max-w-md overflow-y-auto rounded-3xl p-5" style={{ background: "var(--surface)" }}>
         <h2 className="font-display text-lg font-bold" style={{ color: "var(--text)" }}>{T.imageEdit.title(characterName)}</h2>
         <p className="mt-2 text-sm leading-relaxed" style={{ color: "var(--dim)" }}>
           {T.imageEdit.description}
@@ -927,8 +955,8 @@ function CharacterMenuSheet({
     { label: T.characterMenu.deleteCharacter, description: T.characterMenu.deleteCharacterDesc, onSelect: onDelete, danger: true },
   ];
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4" style={{ background: "rgba(10,6,20,0.55)" }} role="dialog" aria-modal="true" aria-label={T.characterMenu.menuAria(character.display_name)}>
-      <div className="max-h-[92vh] w-full max-w-md overflow-y-auto rounded-3xl p-5" style={{ background: "var(--surface)" }}>
+    <div className="sheet-overlay fixed inset-0 z-50 flex items-center justify-center p-4" style={{ background: "rgba(10,6,20,0.55)" }} role="dialog" aria-modal="true" aria-label={T.characterMenu.menuAria(character.display_name)}>
+      <div className="max-h-full w-full max-w-md overflow-y-auto rounded-3xl p-5" style={{ background: "var(--surface)" }}>
         <div className="flex items-center gap-3">
           <Avatar imageUrl={character.image_url} name={character.display_name} themeColor={character.theme_color} size={40} />
           <h2 className="font-display min-w-0 flex-1 truncate text-lg font-bold" style={{ color: "var(--text)" }}>{T.characterMenu.title(character.display_name)}</h2>
@@ -960,9 +988,9 @@ function CharacterMenuSheet({
   );
 }
 
-/** 設定全体へのレビューのフォーム（旧「概要を確認する」画面から「設定を編集する」
- * 画面へ統合したもの）。特定の発言ではなく設定全体への指摘を送ると、通常の
- * レビューと同じ流れで見直し・自動適用され、結果はレビュー履歴に残る。 */
+/** 設定全体へのレビューのフォーム（「設定を編集する」画面の詳細設定画面に置く）。
+ * 特定の発言ではなく設定全体への指摘を送ると、通常のレビューと同じ流れで
+ * 見直し・自動適用され、結果はレビュー履歴に残る。 */
 function SettingsReviewSection({ characterId, characterName }: { characterId: number; characterName: string }) {
   const queryClient = useQueryClient();
   const [reviewText, setReviewText] = useState("");
@@ -1036,7 +1064,206 @@ function SettingsReviewSection({ characterId, characterName }: { characterId: nu
   );
 }
 
+/** 詳細設定の画面（「設定を編集する」画面の保存ボタンの上にある「詳細設定」
+ * ボタンから移動する）。レビュー関連の項目（設定全体へのレビュー）だけを
+ * 集めた画面で、この画面で変更してそのまま保存できる（レビューは送信
+ * ボタン）。本体の編集フォームとは独立しており、戻ると編集画面へ戻る。
+ * 自動レビューの ON/OFF はここには無い: 自動レビューはキャラ設定ではなく、
+ * チャット画面のレビューモードを ON にして送信した時に実行される。 */
+function CharacterAdvancedSettingsSheet({
+  character,
+  onBack,
+  onClose,
+}: {
+  character: CharacterItem;
+  onBack: () => void;
+  onClose: () => void;
+}) {
+  return (
+    <div className="sheet-overlay fixed inset-0 z-50 flex items-center justify-center p-4" style={{ background: "rgba(10,6,20,0.55)" }} role="dialog" aria-modal="true" aria-label={T.settingsEdit.advancedAria(character.display_name)}>
+      <div className="max-h-full w-full max-w-md overflow-y-auto rounded-3xl p-5" style={{ background: "var(--surface)" }}>
+        <div className="flex items-start justify-between gap-3">
+          <h2 className="font-display text-lg font-bold" style={{ color: "var(--text)" }}>{T.settingsEdit.advancedTitle}</h2>
+          <button
+            type="button"
+            onClick={onClose}
+            aria-label={T.common.close}
+            className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-base"
+            style={{ background: "var(--surface-alt)", color: "var(--dim)" }}
+          >
+            ×
+          </button>
+        </div>
+        <p className="mt-2 text-sm leading-relaxed" style={{ color: "var(--dim)" }}>
+          {T.settingsEdit.advancedIntro}
+        </p>
+        <div className="mt-4">
+          <SettingsReviewSection characterId={character.id} characterName={character.display_name} />
+        </div>
+        <button
+          type="button"
+          onClick={onBack}
+          className="mt-5 w-full rounded-full px-4 py-2.5 font-bold"
+          style={{ background: "var(--surface-alt)", color: "var(--text)" }}
+        >
+          {T.settingsEdit.advancedBack}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+type AutoReviewItem = ApiResponse<typeof api, "getChatState">["auto_reviews"][number];
+
+/** 自動レビューの生記録（送ったプロンプト全文と返ってきたレスポンス全文）。
+ * 全体ログの生成記録と同じ分け方・見出し・見た目で2つに分けて見せる。
+ * 記録が無い自動レビュー（この記録が始まる前に実行された分など）では
+ * 何も表示しない。 */
+function ReviewPromptResponse({ prompt, response }: { prompt: string; response: string }) {
+  if (!prompt && !response) return null;
+  return (
+    <div className="mt-3 flex flex-col gap-3">
+      {prompt && (
+        <div>
+          <p className="text-xs font-bold" style={{ color: "var(--dim)" }}>{T.logs.requestHeading}</p>
+          <pre className="mt-1 max-h-80 overflow-auto rounded-xl p-3 text-xs leading-relaxed whitespace-pre-wrap break-words" style={{ background: "var(--surface)", color: "var(--text)" }}>
+            {prompt}
+          </pre>
+        </div>
+      )}
+      {response && (
+        <div>
+          <p className="text-xs font-bold" style={{ color: "var(--dim)" }}>{T.logs.responseHeading}</p>
+          <pre className="mt-1 max-h-80 overflow-auto rounded-xl p-3 text-xs leading-relaxed whitespace-pre-wrap break-words" style={{ background: "var(--surface)", color: "var(--text)" }}>
+            {response}
+          </pre>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** 自動レビューの結果シート。自動レビューが走った回の生成バッチの後ろの
+ * 「レビュー結果」ボタンから開く。その回の結果（実行待ち・実行中・変更あり・
+ * 変更なし・失敗の状態と、差分・改訂の意図）をキャラごとに表示する。 */
+function AutoReviewResultSheet({ reviews, onClose }: { reviews: AutoReviewItem[]; onClose: () => void }) {
+  return (
+    <div className="sheet-overlay fixed inset-0 z-50 flex items-center justify-center p-4" style={{ background: "rgba(10,6,20,0.55)" }} role="dialog" aria-modal="true" aria-label={T.autoReview.resultTitle}>
+      <div className="max-h-full w-full max-w-md overflow-y-auto rounded-3xl p-5" style={{ background: "var(--surface)" }}>
+        <div className="flex items-start justify-between gap-2">
+          <h2 className="font-display text-lg font-bold" style={{ color: "var(--text)" }}>{T.autoReview.resultTitle}</h2>
+          <button type="button" onClick={onClose} aria-label={T.autoReview.closeAria} className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full" style={{ background: "var(--surface-alt)", color: "var(--dim)" }}>
+            ×
+          </button>
+        </div>
+        <div className="mt-4 flex flex-col gap-4">
+          {reviews.map((r) => (
+            <article key={r.review_id} className="rounded-2xl p-3" style={{ background: "var(--surface-alt)" }}>
+              <div className="flex items-center gap-2">
+                <span className="text-sm font-bold" style={{ color: "var(--text)" }}>{r.character_name}</span>
+                <span
+                  className="rounded-full px-2 py-0.5 text-xs font-bold"
+                  style={{
+                    background: "var(--surface)",
+                    color: r.status === "failed" ? "var(--danger)" : r.status === "done" ? "var(--gold)" : "var(--dim)",
+                  }}
+                >
+                  {T.autoReview.statusLabels[r.status] ?? r.status}
+                </span>
+                {r.reverted_at && (
+                  <span className="rounded-full px-2 py-0.5 text-xs font-bold" style={{ background: "var(--surface)", color: "var(--danger)" }}>{T.reviewHistory.revertedBadge}</span>
+                )}
+              </div>
+              {(r.status === "pending" || r.status === "processing") && (
+                <p className="mt-2 text-sm" style={{ color: "var(--dim)" }}>{T.autoReview.waitingNote}</p>
+              )}
+              {r.status === "failed" && (
+                <>
+                  <p className="mt-2 text-sm" style={{ color: "var(--danger)" }}>{reviewFailLabel(r.fail_reason)}{T.autoReview.failedNoteSuffix}</p>
+                  {r.fail_detail ? (
+                    <p className="mt-1 text-xs whitespace-pre-wrap break-words" style={{ color: "var(--dim)" }}>{T.reviewHistory.failDetailLabel(r.fail_detail)}</p>
+                  ) : null}
+                </>
+              )}
+              {r.status === "no_change" && (
+                <p className="mt-2 text-sm" style={{ color: "var(--dim)" }}>{T.autoReview.noChangeNote}</p>
+              )}
+              {r.intent.trim() && (
+                <>
+                  <p className="mt-3 text-xs font-bold" style={{ color: "var(--dim)" }}>{T.autoReview.intentHeading}</p>
+                  <p className="mt-0.5 text-sm whitespace-pre-wrap" style={{ color: "var(--text)" }}>{r.intent}</p>
+                </>
+              )}
+              {r.diff.length > 0 && (
+                <>
+                  <p className="mt-3 text-xs font-bold" style={{ color: "var(--dim)" }}>{T.autoReview.diffHeading(r.diff.length)}</p>
+                  <div className="mt-1 flex flex-col gap-2">
+                    {r.diff.map((d, i) => (
+                      <div key={i} className="rounded-xl p-2.5" style={{ background: "var(--surface)" }}>
+                        <p className="text-xs font-bold break-all" style={{ color: "var(--gold)" }}>{d.path}</p>
+                        <DiffValuePair before={d.before} after={d.after} />
+                      </div>
+                    ))}
+                  </div>
+                </>
+              )}
+              {r.reverted_at && (
+                <p className="mt-2 text-xs" style={{ color: "var(--dim)" }}>{T.autoReview.revertedNote}</p>
+              )}
+              <ReviewPromptResponse prompt={r.prompt_text} response={r.response_text} />
+            </article>
+          ))}
+        </div>
+        <p className="mt-3 text-xs leading-relaxed" style={{ color: "var(--dim)" }}>{T.autoReview.historyHint}</p>
+      </div>
+    </div>
+  );
+}
+
+/** その回の生成バッチの後ろに置く「レビュー結果」ボタン。 */
+function AutoReviewResultButton({ onOpen }: { onOpen: () => void }) {
+  return (
+    <div className="flex justify-center">
+      <button
+        type="button"
+        onClick={onOpen}
+        aria-label={T.autoReview.resultButtonAria}
+        className="rounded-full px-3.5 py-1.5 text-xs font-bold"
+        style={{ background: "var(--surface)", color: "var(--dim)", border: "1px solid var(--border)" }}
+      >
+        {T.autoReview.resultButton}
+      </button>
+    </div>
+  );
+}
+
 type SettingsFormData = ApiResponse<typeof api, "getCharacterSettingsForm">;
+
+/** 新規作成フォームの初期値（全項目空）。名前だけ入力すれば作成できる。 */
+const EMPTY_SETTINGS_FORM: SettingsFormData = {
+  id: 0,
+  display_name: "",
+  editable: true,
+  name: "",
+  summary: "",
+  greeting: "",
+  background_text: "",
+  background_links: [],
+  link_summary: "",
+  portrayal_focus: "",
+  video_urls: [],
+  video_notes: "",
+  user_relationship: "",
+  call_user_as: "",
+  speech_style: "",
+  speech_first_person: "",
+  speech_second_person: "",
+  speech_catchphrase: "",
+  speech_memo: "",
+  avatar_memory: "",
+  elements: [],
+  traits: [],
+};
 
 const editInputStyle = {
   background: "var(--surface-alt)",
@@ -1118,18 +1345,23 @@ function EditSection({ title, children }: { title: string; children: ReactNode }
 type TraitDraft = { id: string; label: string; examplesText: string; enabled: boolean };
 type ElementDraft = { key: string; value: string };
 
-/** 設定の編集フォーム本体。初期値は取得済みのフォームデータから作る。 */
+/** 設定の編集フォーム本体。初期値は取得済みのフォームデータから作る。
+ * character が null の場合は新規作成モードで、同じ項目フォーマットのまま
+ * createCharacter へ送る（詳細設定ボタンは出さない）。 */
 function CharacterSettingsEditForm({
   character,
   initial,
   onClose,
+  onOpenAdvanced,
 }: {
-  character: CharacterItem;
+  character: CharacterItem | null;
   initial: SettingsFormData;
   onClose: () => void;
+  onOpenAdvanced?: () => void;
 }) {
   const queryClient = useQueryClient();
-  const F = FIELDS.updateCharacterSettings;
+  const isCreate = character === null;
+  const F = isCreate ? FIELDS.createCharacter : FIELDS.updateCharacterSettings;
   const [name, setName] = useState(initial.name);
   const [summary, setSummary] = useState(initial.summary);
   const [greeting, setGreeting] = useState(initial.greeting);
@@ -1154,9 +1386,8 @@ function CharacterSettingsEditForm({
   const [error, setError] = useState("");
 
   const save = useMutation({
-    mutationFn: async () =>
-      await api.updateCharacterSettings({
-        character_id: character.id,
+    mutationFn: async () => {
+      const fields = {
         name: name.trim(),
         summary,
         greeting,
@@ -1181,13 +1412,19 @@ function CharacterSettingsEditForm({
           examples: t.examplesText.split(/\r?\n/).map((l) => l.trim()).filter(Boolean),
           enabled: t.enabled,
         })),
-      }),
+      };
+      return character === null
+        ? await api.createCharacter(fields)
+        : await api.updateCharacterSettings({ character_id: character.id, ...fields });
+    },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["home"] });
-      queryClient.invalidateQueries({ queryKey: ["chat", character.id] });
-      queryClient.invalidateQueries({ queryKey: ["group"] });
-      queryClient.invalidateQueries({ queryKey: ["character-settings", character.id] });
-      queryClient.invalidateQueries({ queryKey: ["character-settings-form", character.id] });
+      if (character !== null) {
+        queryClient.invalidateQueries({ queryKey: ["chat", character.id] });
+        queryClient.invalidateQueries({ queryKey: ["group"] });
+        queryClient.invalidateQueries({ queryKey: ["character-settings", character.id] });
+        queryClient.invalidateQueries({ queryKey: ["character-settings-form", character.id] });
+      }
       onClose();
     },
     onError: (e) => setError(errMsg(e, T.common.saveFailed)),
@@ -1210,7 +1447,7 @@ function CharacterSettingsEditForm({
   return (
     <div className="flex flex-col gap-5">
       <p className="text-sm leading-relaxed" style={{ color: "var(--dim)" }}>
-        {T.settingsEdit.intro}
+        {isCreate ? T.createCharacter.intro : T.settingsEdit.intro}
       </p>
 
       <EditSection title={T.settingsEdit.sectionBasic}>
@@ -1340,6 +1577,16 @@ function CharacterSettingsEditForm({
       </EditSection>
 
       {error && <p className="text-sm" style={{ color: "var(--danger)" }}>{error}</p>}
+      {onOpenAdvanced && (
+        <button
+          type="button"
+          onClick={onOpenAdvanced}
+          className="w-full rounded-full px-4 py-2.5 font-bold"
+          style={{ background: "var(--surface-alt)", color: "var(--text)" }}
+        >
+          {T.settingsEdit.advancedButton}
+        </button>
+      )}
       <div className="flex gap-3">
         <button type="button" onClick={onClose} className="flex-1 rounded-full px-4 py-2.5 font-bold" style={{ background: "var(--surface-alt)", color: "var(--text)" }}>
           {T.common.cancel}
@@ -1351,7 +1598,13 @@ function CharacterSettingsEditForm({
           className="flex-1 rounded-full px-4 py-2.5 font-bold text-white disabled:opacity-50"
           style={{ background: "var(--accent)" }}
         >
-          {save.isPending ? T.common.saving : T.common.save}
+          {isCreate
+            ? save.isPending
+              ? T.createCharacter.submitting
+              : T.createCharacter.submit
+            : save.isPending
+              ? T.common.saving
+              : T.common.save}
         </button>
       </div>
     </div>
@@ -1360,11 +1613,14 @@ function CharacterSettingsEditForm({
 
 /** 設定を編集するシート（設定メニューから開く）。旧「概要を確認する」画面は
  * この画面へ統合した: 概要（表示名・元の名前・取り込み元ID・登録日時）を
- * 上部に表示し、その下に編集フォーム、最後に設定全体へのレビューの
- * フォームを置く。生成に使われる設定本文・関係と呼び方（出力）は場所を
- * 取るため常時表示せず、「出力を確認する」ボタンを押した時だけ広げる。 */
+ * 上部に表示し、その下に編集フォームを置く。生成に使われる設定本文・関係と
+ * 呼び方（出力）は場所を取るため常時表示せず、「出力を確認する」ボタンを
+ * 押した時だけ広げる。レビュー関連の項目（設定全体へのレビュー）は本体
+ * フォームには置かず、保存ボタンの上の「詳細設定」ボタンから詳細設定の
+ * 画面（CharacterAdvancedSettingsSheet）へ移動して扱う。 */
 function CharacterSettingsEditSheet({ character, onClose }: { character: CharacterItem; onClose: () => void }) {
   const [showOutput, setShowOutput] = useState(false);
+  const [showAdvanced, setShowAdvanced] = useState(false);
   const q = useQuery({
     queryKey: ["character-settings-form", character.id],
     queryFn: () => api.getCharacterSettingsForm({ character_id: character.id }),
@@ -1375,8 +1631,8 @@ function CharacterSettingsEditSheet({ character, onClose }: { character: Charact
   });
   const o = overview.data;
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4" style={{ background: "rgba(10,6,20,0.55)" }} role="dialog" aria-modal="true" aria-label={T.settingsEdit.sheetAria(character.display_name)}>
-      <div className="max-h-[92vh] w-full max-w-md overflow-y-auto rounded-3xl p-5" style={{ background: "var(--surface)" }}>
+    <div className="sheet-overlay fixed inset-0 z-50 flex items-center justify-center p-4" style={{ background: "rgba(10,6,20,0.55)" }} role="dialog" aria-modal="true" aria-label={T.settingsEdit.sheetAria(character.display_name)}>
+      <div className="max-h-full w-full max-w-md overflow-y-auto rounded-3xl p-5" style={{ background: "var(--surface)" }}>
         <div className="flex items-start justify-between gap-3">
           <h2 className="font-display text-lg font-bold" style={{ color: "var(--text)" }}>{T.settingsEdit.title}</h2>
           <button
@@ -1456,17 +1712,58 @@ function CharacterSettingsEditSheet({ character, onClose }: { character: Charact
           </div>
         )}
         {q.data && !q.data.editable && (
-          <p className="mt-3 text-sm leading-relaxed" style={{ color: "var(--dim)" }}>
-            {T.settingsEdit.notEditable}
-          </p>
+          <>
+            <p className="mt-3 text-sm leading-relaxed" style={{ color: "var(--dim)" }}>
+              {T.settingsEdit.notEditable}
+            </p>
+            <button
+              type="button"
+              onClick={() => setShowAdvanced(true)}
+              className="mt-3 w-full rounded-full px-4 py-2.5 font-bold"
+              style={{ background: "var(--surface-alt)", color: "var(--text)" }}
+            >
+              {T.settingsEdit.advancedButton}
+            </button>
+          </>
         )}
         {q.data && q.data.editable && (
           <div className="mt-3">
-            <CharacterSettingsEditForm character={character} initial={q.data} onClose={onClose} />
+            <CharacterSettingsEditForm character={character} initial={q.data} onClose={onClose} onOpenAdvanced={() => setShowAdvanced(true)} />
           </div>
         )}
-        <div className="mt-5">
-          <SettingsReviewSection characterId={character.id} characterName={character.display_name} />
+      </div>
+      {showAdvanced && (
+        <CharacterAdvancedSettingsSheet
+          character={character}
+          onBack={() => setShowAdvanced(false)}
+          onClose={onClose}
+        />
+      )}
+    </div>
+  );
+}
+
+/** キャラクターを一から作成するシート（キャラ追加の導線から開く）。
+ * 「設定を編集する」と同じ項目フォーマットのフォームを使い、名前だけ
+ * 必須で作成できる。作成したキャラは取り込みで追加したキャラと同じ扱い。 */
+function CharacterCreateSheet({ onClose }: { onClose: () => void }) {
+  return (
+    <div className="sheet-overlay fixed inset-0 z-50 flex items-center justify-center p-4" style={{ background: "rgba(10,6,20,0.55)" }} role="dialog" aria-modal="true" aria-label={T.createCharacter.sheetAria}>
+      <div className="max-h-full w-full max-w-md overflow-y-auto rounded-3xl p-5" style={{ background: "var(--surface)" }}>
+        <div className="flex items-start justify-between gap-3">
+          <h2 className="font-display text-lg font-bold" style={{ color: "var(--text)" }}>{T.createCharacter.title}</h2>
+          <button
+            type="button"
+            onClick={onClose}
+            aria-label={T.common.close}
+            className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-base"
+            style={{ background: "var(--surface-alt)", color: "var(--dim)" }}
+          >
+            ×
+          </button>
+        </div>
+        <div className="mt-3">
+          <CharacterSettingsEditForm character={null} initial={EMPTY_SETTINGS_FORM} onClose={onClose} />
         </div>
       </div>
     </div>
@@ -1524,8 +1821,8 @@ function RenameSheet({
     rename.mutate(v);
   };
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4" style={{ background: "rgba(10,6,20,0.55)" }} role="dialog" aria-modal="true" aria-label={texts.title}>
-      <div className="max-h-[92vh] w-full max-w-md overflow-y-auto rounded-3xl p-5" style={{ background: "var(--surface)" }}>
+    <div className="sheet-overlay fixed inset-0 z-50 flex items-center justify-center p-4" style={{ background: "rgba(10,6,20,0.55)" }} role="dialog" aria-modal="true" aria-label={texts.title}>
+      <div className="max-h-full w-full max-w-md overflow-y-auto rounded-3xl p-5" style={{ background: "var(--surface)" }}>
         <h2 className="font-display text-lg font-bold" style={{ color: "var(--text)" }}>{texts.title}</h2>
         <p className="mt-2 text-sm leading-relaxed" style={{ color: "var(--dim)" }}>
           {texts.description}
@@ -1760,8 +2057,8 @@ function CategoryManageSheet({ categories, onClose }: { categories: CategoryItem
   const editBlockedIds = editing ? categoryDescendantIdSet(categories, editing.id) : new Set<number>();
   const childCountOf = (id: number) => categories.filter((c) => c.parent_id === id).length;
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4" style={{ background: "rgba(10,6,20,0.55)" }} role="dialog" aria-modal="true" aria-label={T.categoryManage.title}>
-      <div className="max-h-[92vh] w-full max-w-md overflow-y-auto rounded-3xl p-5" style={{ background: "var(--surface)" }}>
+    <div className="sheet-overlay fixed inset-0 z-50 flex items-center justify-center p-4" style={{ background: "rgba(10,6,20,0.55)" }} role="dialog" aria-modal="true" aria-label={T.categoryManage.title}>
+      <div className="max-h-full w-full max-w-md overflow-y-auto rounded-3xl p-5" style={{ background: "var(--surface)" }}>
         <div className="flex items-start justify-between gap-3">
           <h2 className="font-display text-lg font-bold" style={{ color: "var(--text)" }}>{T.categoryManage.title}</h2>
           <button
@@ -1984,8 +2281,8 @@ function CategoryAssignSheet({
   };
   const isDirty = [...selectedIds].sort((a, b) => a - b).join(",") !== [...initialIds].sort((a, b) => a - b).join(",");
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4" style={{ background: "rgba(10,6,20,0.55)" }} role="dialog" aria-modal="true" aria-label={T.categoryAssign.sheetAria(character.display_name)}>
-      <div className="max-h-[92vh] w-full max-w-md overflow-y-auto rounded-3xl p-5" style={{ background: "var(--surface)" }}>
+    <div className="sheet-overlay fixed inset-0 z-50 flex items-center justify-center p-4" style={{ background: "rgba(10,6,20,0.55)" }} role="dialog" aria-modal="true" aria-label={T.categoryAssign.sheetAria(character.display_name)}>
+      <div className="max-h-full w-full max-w-md overflow-y-auto rounded-3xl p-5" style={{ background: "var(--surface)" }}>
         <div className="flex items-center gap-3">
           <Avatar imageUrl={character.image_url} name={character.display_name} themeColor={character.theme_color} size={40} />
           <h2 className="font-display min-w-0 flex-1 truncate text-lg font-bold" style={{ color: "var(--text)" }}>{T.categoryAssign.title(character.display_name)}</h2>
@@ -2277,8 +2574,8 @@ function ReviewHistorySheet({ characterId, characterName, onClose }: { character
 
   const reviews: ReviewHistoryData["reviews"] = history.data?.reviews ?? [];
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4" style={{ background: "rgba(10,6,20,0.55)" }} role="dialog" aria-modal="true" aria-label={T.reviewHistory.title(characterName)}>
-      <div className="max-h-[92vh] w-full max-w-md overflow-y-auto rounded-3xl p-5" style={{ background: "var(--surface)" }}>
+    <div className="sheet-overlay fixed inset-0 z-50 flex items-center justify-center p-4" style={{ background: "rgba(10,6,20,0.55)" }} role="dialog" aria-modal="true" aria-label={T.reviewHistory.title(characterName)}>
+      <div className="max-h-full w-full max-w-md overflow-y-auto rounded-3xl p-5" style={{ background: "var(--surface)" }}>
         <div className="flex items-start justify-between gap-2">
           <h2 className="font-display text-lg font-bold" style={{ color: "var(--text)" }}>{T.reviewHistory.title(characterName)}</h2>
           <button type="button" onClick={onClose} aria-label={T.reviewHistory.closeAria} className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full" style={{ background: "var(--surface-alt)", color: "var(--dim)" }}>
@@ -2308,13 +2605,16 @@ function ReviewHistorySheet({ characterId, characterName, onClose }: { character
                   {T.review.statusLabels[r.status] ?? r.status}
                 </span>
                 <span className="text-xs" style={{ color: "var(--dim)" }}>{formatDateTime(r.created_at)}・{r.target_kind === "group" ? T.reviewHistory.groupMessage : r.target_kind === "settings" ? T.reviewHistory.settingsMessage : T.reviewHistory.chatMessage}</span>
+                {r.review_kind === "auto" && (
+                  <span className="rounded-full px-2 py-0.5 text-xs font-bold" style={{ background: "var(--surface)", color: "var(--gold)" }}>{T.reviewHistory.autoBadge}</span>
+                )}
                 {r.revision?.reverted_at && (
                   <span className="rounded-full px-2 py-0.5 text-xs font-bold" style={{ background: "var(--surface)", color: "var(--danger)" }}>{T.reviewHistory.revertedBadge}</span>
                 )}
               </div>
-              <p className="mt-2 text-xs font-bold" style={{ color: "var(--dim)" }}>{T.reviewHistory.targetHeading}</p>
-              <p className="mt-0.5 line-clamp-4 text-sm whitespace-pre-wrap" style={{ color: "var(--text)" }}>{r.target_kind === "settings" ? T.reviewHistory.settingsTargetBody : r.message_body}</p>
-              <p className="mt-2 text-xs font-bold" style={{ color: "var(--dim)" }}>{T.reviewHistory.feedbackHeading}</p>
+              <p className="mt-2 text-xs font-bold" style={{ color: "var(--dim)" }}>{r.review_kind === "auto" ? T.reviewHistory.autoTargetHeading : T.reviewHistory.targetHeading}</p>
+              <p className="mt-0.5 line-clamp-4 text-sm whitespace-pre-wrap" style={{ color: "var(--text)" }}>{r.review_kind === "auto" ? r.batch_text : r.target_kind === "settings" ? T.reviewHistory.settingsTargetBody : r.message_body}</p>
+              <p className="mt-2 text-xs font-bold" style={{ color: "var(--dim)" }}>{r.review_kind === "auto" ? T.reviewHistory.autoFeedbackHeading : T.reviewHistory.feedbackHeading}</p>
               <p className="mt-0.5 text-sm whitespace-pre-wrap" style={{ color: "var(--text)" }}>{r.feedback}</p>
               {r.status === "failed" && (
                 <>
@@ -2395,6 +2695,9 @@ function ReviewHistorySheet({ characterId, characterName, onClose }: { character
                   )}
                 </>
               )}
+              {r.review_kind === "auto" && (
+                <ReviewPromptResponse prompt={r.prompt_text} response={r.response_text} />
+              )}
             </article>
           ))}
         </div>
@@ -2465,8 +2768,8 @@ function GroupListMenuSheet({
   onDelete: () => void;
 }) {
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4" style={{ background: "rgba(10,6,20,0.55)" }} role="dialog" aria-modal="true" aria-label={T.home.groupMenuAria(group.name)}>
-      <div className="max-h-[92vh] w-full max-w-md overflow-y-auto rounded-3xl p-5" style={{ background: "var(--surface)" }}>
+    <div className="sheet-overlay fixed inset-0 z-50 flex items-center justify-center p-4" style={{ background: "rgba(10,6,20,0.55)" }} role="dialog" aria-modal="true" aria-label={T.home.groupMenuAria(group.name)}>
+      <div className="max-h-full w-full max-w-md overflow-y-auto rounded-3xl p-5" style={{ background: "var(--surface)" }}>
         <h2 className="font-display min-w-0 truncate text-lg font-bold" style={{ color: "var(--text)" }}>{T.home.groupMenuTitle(group.name)}</h2>
         <div className="mt-4 flex flex-col gap-2">
           <button
@@ -2586,8 +2889,8 @@ function OtherMenuSheet({ onClose, onExportCharacters, onCategoryManage }: { onC
     { label: T.categoryManage.title, description: T.home.categoryManageDesc, onSelect: onCategoryManage },
   ];
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4" style={{ background: "rgba(10,6,20,0.55)" }} role="dialog" aria-modal="true" aria-label={T.home.otherMenuAria}>
-      <div className="max-h-[92vh] w-full max-w-md overflow-y-auto rounded-3xl p-5" style={{ background: "var(--surface)" }}>
+    <div className="sheet-overlay fixed inset-0 z-50 flex items-center justify-center p-4" style={{ background: "rgba(10,6,20,0.55)" }} role="dialog" aria-modal="true" aria-label={T.home.otherMenuAria}>
+      <div className="max-h-full w-full max-w-md overflow-y-auto rounded-3xl p-5" style={{ background: "var(--surface)" }}>
         <h2 className="font-display text-lg font-bold" style={{ color: "var(--text)" }}>{T.home.otherMenuTitle}</h2>
         <div className="mt-4 flex flex-col gap-2">
           {items.map((item) => (
@@ -2618,11 +2921,19 @@ function OtherMenuSheet({ onClose, onExportCharacters, onCategoryManage }: { onC
 
 /** キャラ情報の出力シート。キャラを複数選択でき、「画像も書き出す」を
  * オンにすると各キャラのフォルダへ character.json と画像ファイルが入る。
- * 1人・画像なしの時だけ character.json 単体で、その他は zip で出力する。 */
-function CharacterExportSheet({ characters, onClose }: { characters: CharacterItem[]; onClose: () => void }) {
+ * 1人・画像なしの時だけ character.json 単体で、その他は zip で出力する。
+ * 一覧の並びは個人チャット一覧で現在設定されている並び方（sort）に一致させ、
+ * 他のキャラ選択画面と同じカテゴリ絞り込みも持つ。絞り込みで隠れたキャラの
+ * 選択状態は保持する（selected は表示対象とは独立に保持される）。 */
+function CharacterExportSheet({ characters, categories, sort, onClose }: { characters: CharacterItem[]; categories: CategoryItem[]; sort: CharSort; onClose: () => void }) {
   const [selected, setSelected] = useState<number[]>([]);
   const [includeImages, setIncludeImages] = useState(false);
   const [error, setError] = useState("");
+  const [catFilter, setCatFilter] = useState<CategoryFilter>("all");
+  const visibleCharacters = sortCharactersBy(
+    characters.filter((c) => charMatchesFilter(c, categories, catFilter)),
+    sort,
+  );
   const toggle = (id: number) =>
     setSelected((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));
   const runExport = useMutation({
@@ -2666,8 +2977,8 @@ function CharacterExportSheet({ characters, onClose }: { characters: CharacterIt
     onError: (e) => setError(errMsg(e, T.characterExport.failed)),
   });
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4" style={{ background: "rgba(10,6,20,0.55)" }} role="dialog" aria-modal="true" aria-label={T.characterExport.title}>
-      <div className="max-h-[88vh] w-full max-w-md overflow-y-auto rounded-3xl p-5" style={{ background: "var(--surface)" }}>
+    <div className="sheet-overlay fixed inset-0 z-50 flex items-center justify-center p-4" style={{ background: "rgba(10,6,20,0.55)" }} role="dialog" aria-modal="true" aria-label={T.characterExport.title}>
+      <div className="max-h-full w-full max-w-md overflow-y-auto rounded-3xl p-5" style={{ background: "var(--surface)" }}>
         <div className="flex items-start justify-between gap-3">
           <h2 className="font-display text-lg font-bold" style={{ color: "var(--text)" }}>{T.characterExport.title}</h2>
           <button
@@ -2686,7 +2997,7 @@ function CharacterExportSheet({ characters, onClose }: { characters: CharacterIt
         <div className="mt-3 flex items-center gap-2">
           <button
             type="button"
-            onClick={() => setSelected(characters.map((c) => c.id))}
+            onClick={() => setSelected((prev) => [...new Set([...prev, ...visibleCharacters.map((c) => c.id)])])}
             className="rounded-full px-3 py-1.5 text-sm font-bold"
             style={{ background: "var(--surface-alt)", color: "var(--text)" }}
           >
@@ -2702,8 +3013,13 @@ function CharacterExportSheet({ characters, onClose }: { characters: CharacterIt
           </button>
           <span className="text-xs" style={{ color: "var(--dim)" }}>{T.common.selectedCount(selected.length)}</span>
         </div>
+        {categories.length > 0 && (
+          <div className="mt-3 flex flex-wrap items-center gap-2">
+            <CategoryFilterSelect id="char-export-category-filter" categories={categories} value={catFilter} onChange={setCatFilter} />
+          </div>
+        )}
         <div className="mt-2 flex flex-col gap-1">
-          {characters.map((c) => (
+          {visibleCharacters.map((c) => (
             <label key={c.id} className="flex min-h-11 cursor-pointer items-center gap-3 rounded-2xl px-2 py-1.5" style={{ background: selected.includes(c.id) ? "var(--accent-soft)" : "transparent" }}>
               <input
                 type="checkbox"
@@ -2719,6 +3035,9 @@ function CharacterExportSheet({ characters, onClose }: { characters: CharacterIt
               )}
             </label>
           ))}
+          {visibleCharacters.length === 0 && (
+            <p className="px-2 py-3 text-sm" style={{ color: "var(--dim)" }}>{T.common.categoryEmpty}</p>
+          )}
         </div>
         <label className="mt-3 flex cursor-pointer items-start gap-2.5 rounded-2xl px-3 py-2.5" style={{ background: "var(--surface-alt)" }}>
           <input
@@ -2761,6 +3080,7 @@ function HomeView({ go }: { go: (v: View) => void }) {
   const queryClient = useQueryClient();
   const home = useQuery({ queryKey: ["home"], queryFn: () => api.listHome({}), refetchInterval: 20000 });
   const [showImport, setShowImport] = useState(false);
+  const [showCreate, setShowCreate] = useState(false);
   const [showOtherMenu, setShowOtherMenu] = useState(false);
   const [showCharExport, setShowCharExport] = useState(false);
   const [showCreateGroup, setShowCreateGroup] = useState(false);
@@ -2777,6 +3097,9 @@ function HomeView({ go }: { go: (v: View) => void }) {
   const [showCategoryManage, setShowCategoryManage] = useState(false);
   // カテゴリ絞り込み: "all" = 全て表示 / "none" = 未分類のみ / 数値 = そのカテゴリのみ。
   const [categoryFilter, setCategoryFilter] = useState<CategoryFilter>("all");
+  // キャラ名検索: 入力がある間だけ、名前に入力文字列を含むキャラに絞る。
+  // カテゴリ絞り込み・並び替えと併用する（displayedCharacters の算出で重ねる）。
+  const [searchQuery, setSearchQuery] = useState("");
   const [sort, setSort] = useState<CharSort>(() => sessionSort ?? "added");
   const [compact, setCompact] = useState<boolean>(() => sessionCompact ?? false);
   // 一覧上部のタブ: 個人（キャラとの1対1）/ グループ。選んだ方のチャットだけ表示する。
@@ -2942,8 +3265,16 @@ function HomeView({ go }: { go: (v: View) => void }) {
   // 表示する。「未分類」はカテゴリが1つも無いキャラ。
   // グループ作成のキャラ選択はこの一覧設定とは独立（シート内でカテゴリ絞り込みを持ち、
   // 並びは常に五十音順。v1.23）。
+  // 名前検索はこれらと重ねて適用する: 表示名に入力文字列を含むキャラだけに
+  // 絞り、入力が空なら全員が対象になる。照合はひらがなとカタカナを区別しない
+  // （検索語と表示名の両方を normalizeKanaForSearch でそろえる）。
+  const searchNeedle = normalizeKanaForSearch(searchQuery.trim());
   const displayedCharacters: CharacterItem[] = sortCharactersBy(
-    characters.filter((c) => charMatchesFilter(c, categories, categoryFilter)),
+    characters.filter(
+      (c) =>
+        charMatchesFilter(c, categories, categoryFilter) &&
+        (searchNeedle === "" || normalizeKanaForSearch(c.display_name).includes(searchNeedle)),
+    ),
     sort,
   );
 
@@ -2992,7 +3323,7 @@ function HomeView({ go }: { go: (v: View) => void }) {
             ) : null)}
           </span>
         )}
-        <StatusBadge status={c.request_status} />
+        <StatusBadge status={c.request_status} reviewing={c.reviewing} />
         {c.unreplied_count > 0 && c.request_status === "none" && (
           <span className="shrink-0 rounded-full px-2 py-0.5 text-xs font-bold" style={{ background: "var(--accent-soft)", color: "var(--gold)" }}>
             {T.status.unreplied(c.unreplied_count)}
@@ -3044,7 +3375,7 @@ function HomeView({ go }: { go: (v: View) => void }) {
           </span>
         )}
         <span className="flex items-center gap-1">
-          <StatusBadge status={c.request_status} />
+          <StatusBadge status={c.request_status} reviewing={c.reviewing} />
           {c.unreplied_count > 0 && c.request_status === "none" && (
             <span className="rounded-full px-2 py-0.5 text-xs font-bold" style={{ background: "var(--accent-soft)", color: "var(--gold)" }}>
               {T.status.unreplied(c.unreplied_count)}
@@ -3134,6 +3465,21 @@ function HomeView({ go }: { go: (v: View) => void }) {
         </div>
 
         {characters.length > 0 && (
+          <div className="mt-3">
+            <label className="sr-only" htmlFor="char-search">{T.home.searchLabel}</label>
+            <input
+              id="char-search"
+              type="search"
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              placeholder={T.home.searchPlaceholder}
+              className="w-full rounded-full px-4 py-2 text-sm"
+              style={{ background: "var(--surface)", color: "var(--text)", border: "1px solid var(--border)" }}
+            />
+          </div>
+        )}
+
+        {characters.length > 0 && (
           <div className="mt-3 flex flex-wrap items-center gap-2">
             <label className="text-xs font-bold" style={{ color: "var(--dim)" }} htmlFor="char-sort">{T.home.sortLabel}</label>
             <select
@@ -3203,7 +3549,7 @@ function HomeView({ go }: { go: (v: View) => void }) {
           </div>
         ) : displayedCharacters.length === 0 ? (
           <p className="mt-4 rounded-3xl p-5 text-sm" style={{ background: "var(--surface)", color: "var(--dim)" }}>
-            {T.home.categoryFilterEmpty}
+            {searchNeedle !== "" ? T.home.searchEmpty : T.home.categoryFilterEmpty}
           </p>
         ) : compact ? (
           <div className="mt-4 flex flex-col gap-2">
@@ -3312,7 +3658,7 @@ function HomeView({ go }: { go: (v: View) => void }) {
                       {g.unread_count}
                     </span>
                   )}
-                  <StatusBadge status={g.request_status} />
+                  <StatusBadge status={g.request_status} reviewing={g.reviewing} />
                   {g.unreplied_count > 0 && g.request_status === "none" && (
                     <span className="shrink-0 rounded-full px-2 py-0.5 text-xs font-bold" style={{ background: "var(--accent-soft)", color: "var(--gold)" }}>
                       {T.status.unreplied(g.unreplied_count)}
@@ -3463,7 +3809,13 @@ function HomeView({ go }: { go: (v: View) => void }) {
         </button>
       </div>
 
-      {showImport && <ImportSheet onClose={() => setShowImport(false)} />}
+      {showImport && (
+        <ImportSheet
+          onClose={() => setShowImport(false)}
+          onCreateNew={() => { setShowImport(false); setShowCreate(true); }}
+        />
+      )}
+      {showCreate && <CharacterCreateSheet onClose={() => setShowCreate(false)} />}
       {showOtherMenu && (
         <OtherMenuSheet
           onClose={() => setShowOtherMenu(false)}
@@ -3472,7 +3824,7 @@ function HomeView({ go }: { go: (v: View) => void }) {
         />
       )}
       {showCharExport && (
-        <CharacterExportSheet characters={characters} onClose={() => setShowCharExport(false)} />
+        <CharacterExportSheet characters={characters} categories={categories} sort={sort} onClose={() => setShowCharExport(false)} />
       )}
       {showCreateGroup && (
         <CreateGroupSheet characters={characters} categories={categories} onClose={() => setShowCreateGroup(false)} go={openView} />
@@ -3813,8 +4165,8 @@ function ScheduleEditSheet({
     setCategoryIds((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4" style={{ background: "rgba(10,6,20,0.55)" }} role="dialog" aria-modal="true" aria-label={initial ? T.scheduleEdit.titleEdit : T.scheduleEdit.titleCreate}>
-      <div className="max-h-[92vh] w-full max-w-md overflow-y-auto rounded-3xl p-5" style={{ background: "var(--surface)" }}>
+    <div className="sheet-overlay fixed inset-0 z-50 flex items-center justify-center p-4" style={{ background: "rgba(10,6,20,0.55)" }} role="dialog" aria-modal="true" aria-label={initial ? T.scheduleEdit.titleEdit : T.scheduleEdit.titleCreate}>
+      <div className="max-h-full w-full max-w-md overflow-y-auto rounded-3xl p-5" style={{ background: "var(--surface)" }}>
         <div className="flex items-start justify-between gap-3">
           <h2 className="font-display text-lg font-bold" style={{ color: "var(--text)" }}>{initial ? T.scheduleEdit.titleEdit : T.scheduleEdit.titleCreate}</h2>
           <button
@@ -4153,11 +4505,15 @@ function LogBody({ id }: { id: number }) {
     );
   }
   const revision = q.data?.review_revision ?? null;
+  // レビュー結果のログで生記録（自動レビュー分）が残っている場合は、
+  // レビュー履歴と同じ形式でリクエスト／レスポンスも表示する。
+  const record = q.data?.review_record ?? null;
   return (
     <>
       <pre className="mt-2 max-h-80 overflow-auto rounded-xl p-3 text-xs leading-relaxed whitespace-pre-wrap break-words" style={{ background: "var(--surface)", color: "var(--text)" }}>
         {body || T.logs.bodyEmpty}
       </pre>
+      {record && <ReviewPromptResponse prompt={record.prompt_text} response={record.response_text} />}
       {revision && (
         <div className="mt-3">
           <p className="text-xs font-bold" style={{ color: "var(--dim)" }}>{T.reviewHistory.diffHeading(revision.diff.length)}</p>
@@ -4285,11 +4641,13 @@ function LogsView({ back }: { back: () => void }) {
   );
 }
 
-function ImportSheet({ onClose }: { onClose: () => void }) {
+function ImportSheet({ onClose, onCreateNew }: { onClose: () => void; onCreateNew: () => void }) {
   const queryClient = useQueryClient();
   const [json, setJson] = useState("");
   const [error, setError] = useState("");
   const [done, setDone] = useState("");
+  const [fileBusy, setFileBusy] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const importChar = useMutation({
     mutationFn: async (text: string) => await api.importCharacter({ json: text, image_url: extractProfileImageUrl(text) }),
     onSuccess: (r) => {
@@ -4299,10 +4657,77 @@ function ImportSheet({ onClose }: { onClose: () => void }) {
     },
     onError: (e) => setError(errMsg(e, T.importSheet.importFailed)),
   });
+  // ファイル取り込み: 選んだ .json ファイルの内容を読み取り、貼り付けと
+  // 同じ取り込み処理（importCharacter）へそのまま渡す。複数人分のJSON
+  // （配列、または profiles 配列を持つ一括形式）が入ったファイルは、
+  // 1人分ずつ同じ処理で順に取り込む。1件の失敗で全体は止めず、失敗した
+  // キャラ名を集めて結果に表示する。
+  const importFromFile = async (file: File) => {
+    setError("");
+    setDone("");
+    let text: string;
+    try {
+      text = await file.text();
+    } catch {
+      setError(T.importSheet.fileReadFailed);
+      return;
+    }
+    if (!text.trim()) {
+      setError(T.importSheet.jsonRequired);
+      return;
+    }
+    let entries: unknown[] | null = null;
+    try {
+      const parsed = JSON.parse(text) as unknown;
+      if (Array.isArray(parsed)) {
+        entries = parsed;
+      } else if (parsed && typeof parsed === "object" && Array.isArray((parsed as { profiles?: unknown }).profiles)) {
+        entries = (parsed as { profiles: unknown[] }).profiles;
+      }
+    } catch {
+      // JSONとして読めない場合は単発フローへ渡し、サーバ側の検証エラーに委ねる。
+    }
+    if (!entries) {
+      importChar.mutate(text);
+      return;
+    }
+    if (entries.length === 0) {
+      setError(T.importSheet.fileNoCharacters);
+      return;
+    }
+    if (entries.length === 1) {
+      importChar.mutate(typeof entries[0] === "string" ? (entries[0] as string) : JSON.stringify(entries[0]));
+      return;
+    }
+    setFileBusy(true);
+    let added = 0;
+    let updated = 0;
+    const failedNames: string[] = [];
+    for (const entry of entries) {
+      const entryText = typeof entry === "string" ? entry : JSON.stringify(entry);
+      try {
+        const r = await api.importCharacter({ json: entryText, image_url: extractProfileImageUrl(entryText) });
+        if (r.is_new) added += 1;
+        else updated += 1;
+      } catch {
+        const nm = entry && typeof entry === "object" && typeof (entry as { name?: unknown }).name === "string"
+          ? ((entry as { name: string }).name)
+          : "";
+        failedNames.push(nm || "?");
+      }
+    }
+    setFileBusy(false);
+    queryClient.invalidateQueries({ queryKey: ["home"] });
+    if (failedNames.length > 0) {
+      setError(T.importSheet.multiPartial(added, updated, failedNames));
+    } else {
+      setDone(T.importSheet.multiDone(added, updated));
+    }
+  };
   const { importKick, importStatus, now: sheetNow } = useImportStatus();
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4" style={{ background: "rgba(10,6,20,0.55)" }} role="dialog" aria-modal="true" aria-label={T.importSheet.title}>
-      <div className="max-h-[88vh] w-full max-w-md overflow-y-auto rounded-3xl p-5" style={{ background: "var(--surface)" }}>
+    <div className="sheet-overlay fixed inset-0 z-50 flex items-center justify-center p-4" style={{ background: "rgba(10,6,20,0.55)" }} role="dialog" aria-modal="true" aria-label={T.importSheet.title}>
+      <div className="max-h-full w-full max-w-md overflow-y-auto rounded-3xl p-5" style={{ background: "var(--surface)" }}>
         <h2 className="font-display text-lg font-bold" style={{ color: "var(--text)" }}>{T.importSheet.title}</h2>
         <p className="mt-2 text-sm leading-relaxed" style={{ color: "var(--dim)" }}>
           {T.importSheet.description}
@@ -4322,13 +4747,34 @@ function ImportSheet({ onClose }: { onClose: () => void }) {
         />
         {error && <p className="mt-2 text-sm" style={{ color: "var(--danger)" }}>{error}</p>}
         {done && <p className="mt-2 text-sm" style={{ color: "var(--gold)" }}>{done}</p>}
+        <input
+          ref={fileInputRef}
+          type="file"
+          accept=".json,application/json"
+          className="hidden"
+          aria-label={T.importSheet.fileButton}
+          onChange={(e) => {
+            const f = e.target.files?.[0];
+            e.target.value = "";
+            if (f) void importFromFile(f);
+          }}
+        />
+        <button
+          type="button"
+          disabled={importChar.isPending || fileBusy}
+          onClick={() => fileInputRef.current?.click()}
+          className="mt-3 w-full rounded-full px-4 py-2.5 font-bold disabled:opacity-50"
+          style={{ background: "var(--surface-alt)", color: "var(--text)", border: "1px solid var(--border)" }}
+        >
+          {fileBusy ? T.importSheet.fileImporting : T.importSheet.fileButton}
+        </button>
         <div className="mt-4 flex gap-3">
           <button type="button" onClick={onClose} className="flex-1 rounded-full px-4 py-2.5 font-bold" style={{ background: "var(--surface-alt)", color: "var(--text)" }}>
             {T.common.close}
           </button>
           <button
             type="button"
-            disabled={importChar.isPending}
+            disabled={importChar.isPending || fileBusy}
             onClick={() => {
               if (!json.trim()) { setError(T.importSheet.jsonRequired); return; }
               importChar.mutate(json);
@@ -4337,6 +4783,16 @@ function ImportSheet({ onClose }: { onClose: () => void }) {
             style={{ background: "var(--accent)" }}
           >
             {T.importSheet.importButton}
+          </button>
+        </div>
+        <div className="mt-5 border-t pt-4" style={{ borderColor: "var(--border)" }}>
+          <button
+            type="button"
+            onClick={onCreateNew}
+            className="w-full rounded-full px-4 py-2.5 font-bold"
+            style={{ background: "var(--surface-alt)", color: "var(--text)" }}
+          >
+            {T.importSheet.createNewButton}
           </button>
         </div>
         <div className="mt-5 border-t pt-4" style={{ borderColor: "var(--border)" }}>
@@ -4408,8 +4864,8 @@ function CreateGroupSheet({ characters, categories, onClose, go }: { characters:
     });
   };
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4" style={{ background: "rgba(10,6,20,0.55)" }} role="dialog" aria-modal="true" aria-label={T.createGroup.title}>
-      <div className="max-h-[88vh] w-full max-w-md overflow-y-auto rounded-3xl p-5" style={{ background: "var(--surface)" }}>
+    <div className="sheet-overlay fixed inset-0 z-50 flex items-center justify-center p-4" style={{ background: "rgba(10,6,20,0.55)" }} role="dialog" aria-modal="true" aria-label={T.createGroup.title}>
+      <div className="max-h-full w-full max-w-md overflow-y-auto rounded-3xl p-5" style={{ background: "var(--surface)" }}>
         <h2 className="font-display text-lg font-bold" style={{ color: "var(--text)" }}>{T.createGroup.title}</h2>
         <label className="mt-4 block text-sm font-bold" style={{ color: "var(--text)" }} htmlFor="group-name">{T.createGroup.nameLabel}</label>
         <input
@@ -4560,7 +5016,9 @@ function ChatView({ characterId, unreadFromSeq, back }: { characterId: number; u
   }, [latestChatSeq, markChatReadMutate]);
 
   const post = useMutation({
-    mutationFn: async (body: string) => await api.postMessage({ character_id: characterId, body }),
+    // 送信時点のレビューモードを一緒に渡す。ON の送信では、返信生成の前に
+    // 自動レビューが実行される（サーバ側の起動条件はこれだけ）。
+    mutationFn: async (body: string) => await api.postMessage({ character_id: characterId, body, review_mode: reviewMode }),
     onSuccess: () => {
       setDraft("");
       setSendError("");
@@ -4632,6 +5090,26 @@ function ChatView({ characterId, unreadFromSeq, back }: { characterId: number; u
   const chatSegments = groupIntoSegments(data?.messages ?? []);
   // 区間フレーム内の発言描画で使うキャラ情報。発言がある時点で data は必ずある。
   const chatCharacter = data?.character;
+  // 自動レビュー: その回の生成バッチ（request_id が同じ生成発言の並び）の
+  // 最後の発言の後ろに「レビュー結果」ボタンを置く。表示の有無は、その回に
+  // 自動レビューが走ったかどうかだけで決まる（現在の ON/OFF には連動しない）。
+  const [autoReviewRequestId, setAutoReviewRequestId] = useState<number | null>(null);
+  const autoReviewMap = new Map<number, AutoReviewItem[]>();
+  for (const r of data?.auto_reviews ?? []) {
+    const arr = autoReviewMap.get(r.request_id) ?? [];
+    arr.push(r);
+    autoReviewMap.set(r.request_id, arr);
+  }
+  const autoReviewBatchEndIds = new Set<number>();
+  {
+    const msgs = data?.messages ?? [];
+    msgs.forEach((m, i) => {
+      if (m.request_id != null && autoReviewMap.has(m.request_id)) {
+        const next = msgs[i + 1];
+        if (!next || next.request_id !== m.request_id) autoReviewBatchEndIds.add(m.id);
+      }
+    });
+  }
   const selectedReviewMsg = data?.messages.find((m) => m.id === selectedReviewId && m.speaker === "character") ?? null;
 
   // 返信待ち（pending / 生成中）の間は送信できない。取り消しボタンは
@@ -4822,6 +5300,9 @@ function ChatView({ characterId, unreadFromSeq, back }: { characterId: number; u
                 </div>
               </div>
               )}
+              {autoReviewBatchEndIds.has(m.id) && (
+                <AutoReviewResultButton onOpen={() => setAutoReviewRequestId(m.request_id)} />
+              )}
             </Fragment>
               ))}
               </div>
@@ -4858,6 +5339,11 @@ function ChatView({ characterId, unreadFromSeq, back }: { characterId: number; u
             <p className="min-w-0 flex-1 text-sm" style={{ color: "var(--text)" }}>{cancelNotice}</p>
             <button type="button" onClick={() => setCancelNotice("")} aria-label={T.chat.closeNoticeAria} className="shrink-0 text-sm font-bold" style={{ color: "var(--dim)" }}>×</button>
           </div>
+        )}
+        {reviewMode && (
+          <p className="mb-1.5 rounded-xl px-3 py-2 text-xs leading-relaxed" style={{ background: "var(--accent-soft)", color: "var(--text)" }} role="status">
+            {T.review.reviewModeNote}
+          </p>
         )}
         <p className="mb-1.5 px-1 text-xs leading-relaxed" style={{ color: "var(--dim)" }}>
           {T.autoTopic.buttonHint(T.autoTopic.hint)}
@@ -4933,6 +5419,13 @@ function ChatView({ characterId, unreadFromSeq, back }: { characterId: number; u
         />
       )}
 
+      {autoReviewRequestId != null && autoReviewMap.get(autoReviewRequestId) && (
+        <AutoReviewResultSheet
+          reviews={autoReviewMap.get(autoReviewRequestId)!}
+          onClose={() => setAutoReviewRequestId(null)}
+        />
+      )}
+
       {confirmClear && (
         <ConfirmSheet
           title={T.chat.clearConfirmTitle}
@@ -4983,8 +5476,8 @@ function RoleplaySheet({
   // （元参加者は過去の発言の参照用に members へ含まれているだけ）。
   const presentMembers = members.filter((m) => m.present && m.in_group);
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4" style={{ background: "rgba(10,6,20,0.55)" }} role="dialog" aria-modal="true" aria-label={T.roleplay.title}>
-      <div className="max-h-[88vh] w-full max-w-md overflow-y-auto rounded-3xl p-5" style={{ background: "var(--surface)" }}>
+    <div className="sheet-overlay fixed inset-0 z-50 flex items-center justify-center p-4" style={{ background: "rgba(10,6,20,0.55)" }} role="dialog" aria-modal="true" aria-label={T.roleplay.title}>
+      <div className="max-h-full w-full max-w-md overflow-y-auto rounded-3xl p-5" style={{ background: "var(--surface)" }}>
         <h2 className="font-display text-lg font-bold" style={{ color: "var(--text)" }}>{T.roleplay.title}</h2>
         <p className="mt-2 text-sm leading-relaxed" style={{ color: "var(--dim)" }}>
           {T.roleplay.description}
@@ -5098,8 +5591,8 @@ function GroupMenuSheet({
     { label: T.groupMenu.deleteGroup, description: T.groupMenu.deleteGroupDesc, danger: true, onSelect: onDelete },
   ];
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4" style={{ background: "rgba(10,6,20,0.55)" }} role="dialog" aria-modal="true" aria-label={T.groupMenu.menuAria}>
-      <div className="max-h-[92vh] w-full max-w-md overflow-y-auto rounded-3xl p-5" style={{ background: "var(--surface)" }}>
+    <div className="sheet-overlay fixed inset-0 z-50 flex items-center justify-center p-4" style={{ background: "rgba(10,6,20,0.55)" }} role="dialog" aria-modal="true" aria-label={T.groupMenu.menuAria}>
+      <div className="max-h-full w-full max-w-md overflow-y-auto rounded-3xl p-5" style={{ background: "var(--surface)" }}>
         <h2 className="font-display min-w-0 truncate text-lg font-bold" style={{ color: "var(--text)" }}>{T.groupMenu.title(groupName)}</h2>
         <div className="mt-4 flex flex-col gap-2">
           {items.map((item) => (
@@ -5159,8 +5652,8 @@ function GroupGuestMobSheet({
     onError: (e) => setError(errMsg(e, T.common.saveFailed)),
   });
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4" style={{ background: "rgba(10,6,20,0.55)" }} role="dialog" aria-modal="true" aria-label={T.groupGuestMob.title}>
-      <div className="max-h-[92vh] w-full max-w-md overflow-y-auto rounded-3xl p-5" style={{ background: "var(--surface)" }}>
+    <div className="sheet-overlay fixed inset-0 z-50 flex items-center justify-center p-4" style={{ background: "rgba(10,6,20,0.55)" }} role="dialog" aria-modal="true" aria-label={T.groupGuestMob.title}>
+      <div className="max-h-full w-full max-w-md overflow-y-auto rounded-3xl p-5" style={{ background: "var(--surface)" }}>
         <h2 className="font-display text-lg font-bold" style={{ color: "var(--text)" }}>{T.groupGuestMob.title}</h2>
         <p className="mt-2 text-sm leading-relaxed" style={{ color: "var(--dim)" }}>
           {T.groupGuestMob.intro}
@@ -5358,8 +5851,8 @@ function FlavorSheet({
     onError: (e) => setError(errMsg(e, T.flavors.saveFailed)),
   });
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4" style={{ background: "rgba(10,6,20,0.55)" }} role="dialog" aria-modal="true" aria-label={T.flavors.title}>
-      <div className="max-h-[92vh] w-full max-w-md overflow-y-auto rounded-3xl p-5" style={{ background: "var(--surface)" }}>
+    <div className="sheet-overlay fixed inset-0 z-50 flex items-center justify-center p-4" style={{ background: "rgba(10,6,20,0.55)" }} role="dialog" aria-modal="true" aria-label={T.flavors.title}>
+      <div className="max-h-full w-full max-w-md overflow-y-auto rounded-3xl p-5" style={{ background: "var(--surface)" }}>
         <h2 className="font-display text-lg font-bold" style={{ color: "var(--text)" }}>{T.flavors.title}</h2>
         <p className="mt-2 text-sm leading-relaxed" style={{ color: "var(--dim)" }}>
           {T.flavors.description}
@@ -5473,8 +5966,8 @@ function GroupMembersSheet({
     save.mutate();
   };
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4" style={{ background: "rgba(10,6,20,0.55)" }} role="dialog" aria-modal="true" aria-label={T.groupMembers.title}>
-      <div className="max-h-[88vh] w-full max-w-md overflow-y-auto rounded-3xl p-5" style={{ background: "var(--surface)" }}>
+    <div className="sheet-overlay fixed inset-0 z-50 flex items-center justify-center p-4" style={{ background: "rgba(10,6,20,0.55)" }} role="dialog" aria-modal="true" aria-label={T.groupMembers.title}>
+      <div className="max-h-full w-full max-w-md overflow-y-auto rounded-3xl p-5" style={{ background: "var(--surface)" }}>
         <h2 className="font-display text-lg font-bold" style={{ color: "var(--text)" }}>{T.groupMembers.title}</h2>
         <p className="mt-2 text-sm leading-relaxed" style={{ color: "var(--dim)" }}>
           {T.groupMembers.description}
@@ -5616,7 +6109,9 @@ function GroupView({ groupId, unreadFromSeq, back }: { groupId: number; unreadFr
   }, [latestGroupSeq, markGroupReadMutate]);
 
   const post = useMutation({
-    mutationFn: async (body: string) => await api.postGroupPrompt({ group_id: groupId, body }),
+    // 送信時点のレビューモードを一緒に渡す。ON の送信では、返信生成の前に
+    // 自動レビューが実行される（サーバ側の起動条件はこれだけ）。
+    mutationFn: async (body: string) => await api.postGroupPrompt({ group_id: groupId, body, review_mode: reviewMode }),
     onSuccess: () => {
       setDraft("");
       setSendError("");
@@ -5685,6 +6180,26 @@ function GroupView({ groupId, unreadFromSeq, back }: { groupId: number; unreadFr
   const data: GroupState | undefined = state.data;
   const req = data?.request;
   const groupSegments = groupIntoSegments(data?.messages ?? []);
+  // 自動レビュー: 1対1と同じく、その回の生成バッチの最後の発言の後ろに
+  // 「レビュー結果」ボタンを置く（表示はその回に自動レビューが走ったか
+  // どうかだけで決まり、現在の ON/OFF には連動しない）。
+  const [autoReviewRequestId, setAutoReviewRequestId] = useState<number | null>(null);
+  const autoReviewMap = new Map<number, AutoReviewItem[]>();
+  for (const r of data?.auto_reviews ?? []) {
+    const arr = autoReviewMap.get(r.request_id) ?? [];
+    arr.push(r);
+    autoReviewMap.set(r.request_id, arr);
+  }
+  const autoReviewBatchEndIds = new Set<number>();
+  {
+    const msgs = data?.messages ?? [];
+    msgs.forEach((m, i) => {
+      if (m.request_id != null && autoReviewMap.has(m.request_id)) {
+        const next = msgs[i + 1];
+        if (!next || next.request_id !== m.request_id) autoReviewBatchEndIds.add(m.id);
+      }
+    });
+  }
 
   // 返信待ち（pending / 生成中）の間は投稿できない。取り消しボタンは
   // 生成が始まる前（pending の間）だけ出す。対象は、未返信の話題がある時は
@@ -5829,19 +6344,6 @@ function GroupView({ groupId, unreadFromSeq, back }: { groupId: number; unreadFr
           <p className="text-xs leading-relaxed" style={{ color: "var(--dim)" }}>
             {T.review.groupBanner}
           </p>
-          <div className="mt-1.5 flex flex-wrap gap-1.5">
-            {data.members.filter((m) => m.present).map((m) => (
-              <button
-                key={m.character_id}
-                type="button"
-                onClick={() => setHistoryChar({ id: m.character_id, name: m.display_name })}
-                className="rounded-full px-2.5 py-1 text-xs font-bold"
-                style={{ background: "var(--surface-alt)", color: "var(--text)" }}
-              >
-                {T.review.historyButtonFor(m.display_name)}
-              </button>
-            ))}
-          </div>
         </div>
       )}
 
@@ -5875,6 +6377,10 @@ function GroupView({ groupId, unreadFromSeq, back }: { groupId: number; unreadFr
               <div ref={(el) => { dividerRef.current = el; }}>
                 <NewMessageDivider />
               </div>
+            ) : null;
+            // 自動レビューが走った回のバッチの最後の発言の後ろに置く結果ボタン。
+            const autoReviewBtn = autoReviewBatchEndIds.has(m.id) ? (
+              <AutoReviewResultButton onOpen={() => setAutoReviewRequestId(m.request_id)} />
             ) : null;
             if (m.kind === "user" && m.is_topic) {
               return (
@@ -5918,6 +6424,7 @@ function GroupView({ groupId, unreadFromSeq, back }: { groupId: number; unreadFr
                       {m.body}
                     </p>
                   </div>
+                  {autoReviewBtn}
                 </Fragment>
               );
             }
@@ -5929,6 +6436,7 @@ function GroupView({ groupId, unreadFromSeq, back }: { groupId: number; unreadFr
                     <p className="text-xs font-bold" style={{ color: "var(--danger)" }}>{T.group.rawHeading}</p>
                     <p className="mt-1 text-sm whitespace-pre-wrap" style={{ color: "var(--text)" }}>{m.body}</p>
                   </div>
+                  {autoReviewBtn}
                 </Fragment>
               );
             }
@@ -5975,6 +6483,7 @@ function GroupView({ groupId, unreadFromSeq, back }: { groupId: number; unreadFr
                   )}
                 </div>
                 </div>
+                {autoReviewBtn}
               </Fragment>
             );
               })}
@@ -6018,6 +6527,11 @@ function GroupView({ groupId, unreadFromSeq, back }: { groupId: number; unreadFr
               <p className="min-w-0 flex-1 text-sm" style={{ color: "var(--text)" }}>{cancelNotice}</p>
               <button type="button" onClick={() => setCancelNotice("")} aria-label={T.chat.closeNoticeAria} className="shrink-0 text-sm font-bold" style={{ color: "var(--dim)" }}>×</button>
             </div>
+          )}
+          {reviewMode && (
+            <p className="mb-1.5 rounded-xl px-3 py-2 text-xs leading-relaxed" style={{ background: "var(--accent-soft)", color: "var(--text)" }} role="status">
+              {T.review.reviewModeNote}
+            </p>
           )}
           <p className="mb-1.5 px-1 text-xs leading-relaxed" style={{ color: "var(--dim)" }}>
             {T.autoTopic.buttonHint(T.autoTopic.hint)}
@@ -6079,6 +6593,13 @@ function GroupView({ groupId, unreadFromSeq, back }: { groupId: number; unreadFr
           characterId={historyChar.id}
           characterName={historyChar.name}
           onClose={() => setHistoryChar(null)}
+        />
+      )}
+
+      {autoReviewRequestId != null && autoReviewMap.get(autoReviewRequestId) && (
+        <AutoReviewResultSheet
+          reviews={autoReviewMap.get(autoReviewRequestId)!}
+          onClose={() => setAutoReviewRequestId(null)}
         />
       )}
 

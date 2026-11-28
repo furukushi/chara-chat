@@ -77,6 +77,7 @@ export const TEXTS = {
   // ------------------------------------------------------------ 一覧の状態バッジ
   status: {
     pending: "返信待ち",
+    reviewing: "レビュー中",
     processing: "生成中",
     failed: "失敗",
     unreplied: (n: number) => `未返信 ${n}`,
@@ -88,6 +89,7 @@ export const TEXTS = {
     groupWord: "掛け合い",
     failedSuffix: "。送った文章は入力欄に戻してあります。",
     generating: (word: string, elapsed: string) => `${word}を生成中です…（${elapsed}経過）`,
+    reviewing: (elapsed: string) => `自動レビュー中です…（${elapsed}経過）`,
     waiting: (word: string, elapsed: string) =>
       `${word}待ちです（発言から${elapsed}）。生成には数分かかることがあります。`,
   },
@@ -200,6 +202,12 @@ export const TEXTS = {
       "生成に使われる設定本文と関係・呼び方は、上の項目を保存すると自動で組み直されます。",
     showOutput: "出力を確認する",
     hideOutput: "出力を閉じる",
+    advancedButton: "詳細設定",
+    advancedTitle: "詳細設定",
+    advancedAria: (name: string) => `${name}の詳細設定`,
+    advancedBack: "設定の編集に戻る",
+    advancedIntro:
+      "レビューに関する設定です。ここでの変更は、この画面でそのまま保存されます。",
     nameRequired: "名前を入力してください。",
     sectionBasic: "基本",
     sectionBackground: "背景",
@@ -343,6 +351,7 @@ export const TEXTS = {
     registeredNotice:
       "レビューを登録しました。見直しが終わると設定へ自動で反映されます。結果はレビュー履歴で確認できます。",
     submitFailed: "レビューの送信に失敗しました",
+    reviewModeNote: "レビューモードが有効です。メッセージ生成前にレビューを開始します。",
     chatBanner: "レビューモード中です。キャラの発言をタップして選ぶと、設定と違う点を指摘できます。",
     groupBanner:
       "レビューモード中です。キャラの発言をタップして選ぶと、そのキャラの設定への指摘ができます。",
@@ -361,10 +370,13 @@ export const TEXTS = {
     revertFailed: "取り消しに失敗しました",
     articleAria: (date: string) => `レビュー ${date}`,
     revertedBadge: "取り消し済み",
+    autoBadge: "自動",
     groupMessage: "グループでの発言",
     chatMessage: "1対1での発言",
     settingsMessage: "設定全体へのレビュー",
     targetHeading: "対象の発言",
+    autoTargetHeading: "今回の利用者のメッセージ",
+    autoFeedbackHeading: "自動レビューの方針",
     settingsTargetBody: "（特定の発言ではなく、設定全体へのレビューです）",
     feedbackHeading: "指摘",
     intentHeading: "改訂の意図",
@@ -388,6 +400,28 @@ export const TEXTS = {
     revertedNote: (date: string) => `${date} に取り消され、変更前の設定に戻っています。`,
   },
 
+  // ------------------------------------------------------------ 自動レビューの結果（会話画面）
+  autoReview: {
+    resultButton: "レビュー結果",
+    resultButtonAria: "この回の自動レビューの結果を見る",
+    resultTitle: "自動レビューの結果",
+    closeAria: "自動レビューの結果を閉じる",
+    statusLabels: {
+      pending: "実行待ち",
+      processing: "実行中",
+      done: "変更あり",
+      no_change: "変更なし",
+      failed: "失敗",
+    } as Record<string, string>,
+    waitingNote: "まだ見直しが終わっていません。終わると結果がここに表示されます。",
+    noChangeNote: "見直しの結果、設定の変更はありませんでした。",
+    failedNoteSuffix: "（設定は変更されていません）",
+    intentHeading: "改訂の意図",
+    diffHeading: (n: number) => `設定の差分（${n}件）`,
+    revertedNote: "この改訂はレビュー履歴から取り消されています。",
+    historyHint: "差分の詳細と取り消しは、各キャラのレビュー履歴から行えます。",
+  },
+
   // ------------------------------------------------------------ ホーム（一覧）
   home: {
     tabListAria: "チャットの種類",
@@ -403,6 +437,9 @@ export const TEXTS = {
     exportCharactersDesc: "キャラクターを選んで、設定JSON（画像つきも可）をファイルに書き出します",
     categoryManageDesc: "カテゴリの追加・名前変更・削除と、親子関係の設定をします",
     sortLabel: "並び替え",
+    searchLabel: "キャラ名で検索",
+    searchPlaceholder: "キャラ名で検索",
+    searchEmpty: "検索に一致するキャラクターはいません。",
     sortAdded: "追加順",
     sortGojuon: "五十音順",
     sortRecent: "最近使用した順",
@@ -579,7 +616,7 @@ export const TEXTS = {
   importSheet: {
     title: "キャラクターを追加",
     description:
-      "アバター総合管理アプリの書き出しJSON（avatar-profile形式）を貼ると、そのキャラクターを追加できます。同じプロファイルの再取り込みでは、設定だけが更新され、会話履歴は残ります。ここからの追加では画像は付きません（画像つきで取り込む場合は下の一括取り込みを使ってください）。",
+      "書き出しJSONを貼るか、端末の .json ファイルを選ぶとキャラクターを追加できます。複数人分が入ったファイルもそのまま取り込めます。",
     jsonLabel: "書き出しJSON",
     addedNotice: (name: string) => `「${name}」を追加しました。`,
     updatedNotice: (name: string) =>
@@ -587,7 +624,26 @@ export const TEXTS = {
     importFailed: "取り込みに失敗しました",
     jsonRequired: "JSONを貼ってください。",
     importButton: "取り込む",
+    fileButton: "ファイルから選ぶ（.json）",
+    fileImporting: "ファイルを取り込んでいます…",
+    fileReadFailed: "ファイルを読み取れませんでした。",
+    fileNoCharacters: "ファイルに取り込めるキャラクターが含まれていません。",
+    multiDone: (added: number, updated: number) =>
+      `ファイルから取り込みました（追加 ${added}件・更新 ${updated}件）。`,
+    multiPartial: (added: number, updated: number, failedNames: string[]) =>
+      `追加 ${added}件・更新 ${updated}件を取り込みましたが、${failedNames.length}件は取り込めませんでした（${failedNames.join("、")}）。`,
     bulkImportWithImages: "アバター管理から一括取り込み（画像つき）",
+    createNewButton: "一から作成する",
+  },
+
+  // ------------------------------------------------------------ キャラ新規作成シート
+  createCharacter: {
+    title: "キャラクターを作成",
+    sheetAria: "キャラクターを一から作成する",
+    intro:
+      "名前だけ必須で、他の項目は空でも作成できます。作成したキャラクターは、取り込んだキャラクターと同じようにチャット・カテゴリ・レビューの対象になり、キャラ情報の出力でJSONも書き出せます。",
+    submit: "作成する",
+    submitting: "作成中…",
   },
 
   // ------------------------------------------------------------ キャラ情報の出力シート
