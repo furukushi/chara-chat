@@ -631,6 +631,13 @@ export const TEXTS = {
     exportButton: "全てのログをファイルでダウンロード",
     exportFailed: "ログファイルの作成に失敗しました",
     exportHeading: (count: number, when: string) => `全体ログ（全${count}件、${when} 時点）`,
+    exportFallbackNote:
+      "この端末ではファイルとして保存できませんでした。下の本文をコピーして保存してください。",
+    exportTextAria: "ダウンロードできなかったログ本文",
+    exportCopyButton: "本文をコピーする",
+    exportCopied: "コピーしました。",
+    exportCopyFailed: "コピーできませんでした。本文を長押し（または選択）してコピーしてください。",
+    exportClose: "閉じる",
   },
 
   // ------------------------------------------------------------ キャラ取り込みシート
@@ -680,6 +687,13 @@ export const TEXTS = {
     noImageNote: "（画像なし）",
     selectRequired: "キャラクターを1人以上選んでください。",
     failed: "出力に失敗しました",
+    saveFailed: "ファイルを保存できませんでした。",
+    exportFallbackNote:
+      "この端末ではファイルとして保存できませんでした。下のJSONをコピーして保存してください。",
+    exportTextAria: "保存できなかったキャラ情報のJSON",
+    exportCopyButton: "JSONをコピーする",
+    exportCopied: "コピーしました。",
+    exportCopyFailed: "コピーできませんでした。本文を長押し（または選択）してコピーしてください。",
     preparing: "出力中…",
     exportButton: (n: number) => (n > 0 ? `${n}人を出力する` : "出力する"),
     selectAria: (name: string) => `${name}を出力対象にする`,
