@@ -79,8 +79,18 @@
    （--header-height / --hatch-space-bottom-padding）を上乗せし、パネルは
    この内側に max-h-full で収める。これによりシート下部のボタンが
    フッターに隠れてタップできなくなることがなくなる。
-   Tailwind の p-4（レイヤー内）より優先させるためレイヤー外で定義する。 */
+   Tailwind の p-4（レイヤー内）より優先させるためレイヤー外で定義する。
+   配置・背景もここへ一本化し、画面側は className="sheet-overlay" だけで使う。 */
 .sheet-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(10, 6, 20, 0.55);
+  padding-left: 1rem;
+  padding-right: 1rem;
   padding-top: calc(1rem + var(--header-height, 0px));
   padding-bottom: calc(1rem + var(--hatch-space-bottom-padding, 0px));
 }

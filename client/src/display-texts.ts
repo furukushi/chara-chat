@@ -16,8 +16,24 @@
 const GENERATION_FAILED = "生成に失敗しました";
 const IMPORT_DONE = "取り込みが完了しました。";
 const IMPORT_FAILED = "取り込みに失敗しました。";
-const GROUP_DELETE_DESC = "このグループを削除します。元には戻せません";
+const GROUP_DELETE_DESC = "このグループと掛け合いログを全て削除します。元には戻せません";
 const SCHEDULE_CREATE = "スケジュールを作成";
+// レビューまわりで名前空間をまたいで使う同一文言（通常レビュー・設定全体
+// レビュー・レビュー履歴・自動レビューの結果で共通）。
+const REVIEW_REGISTERED =
+  "レビューを登録しました。見直しが終わると設定へ自動で反映されます。結果はレビュー履歴で確認できます。";
+const REVIEW_FAILED = "レビューの送信に失敗しました";
+const REVIEW_REQUIRED = "指摘を入力してください。";
+const REVIEW_SUBMIT = "レビューを送る";
+const REVIEW_SENDING = "送信中…";
+const REVIEW_NO_CHANGE_NOTE = "見直しの結果、設定の変更はありませんでした。";
+const REVIEW_FAILED_NOTE_SUFFIX = "（設定は変更されていません）";
+const REVIEW_INTENT_HEADING = "改訂の意図";
+const REVIEW_DIFF_HEADING = (n: number) => `設定の差分（${n}件）`;
+// グループ名の表示（スケジュール一覧と「自動」シートで共通）。
+const GROUP_TARGET_NAME = (name: string) => `グループ「${name}」`;
+// 「自動」の設定まわりの見出し（メニュー・シート・グループメニューで共通）。
+const AUTO_TOPIC_SETTINGS = "自動の設定";
 
 export const TEXTS = {
   // ------------------------------------------------------------ 共通
@@ -45,7 +61,7 @@ export const TEXTS = {
     selectedCount: (n: number) => `選択中 ${n}人`,
     categoryEmpty: "このカテゴリのキャラクターはいません。",
     noCategoriesYet:
-      "まだカテゴリが登録されていません。「その他」メニューの「カテゴリ管理」から先にカテゴリを追加してください。",
+      "まだカテゴリが登録されていません。一覧の「その他」メニューの「カテゴリ管理」から先にカテゴリを追加してください。",
     categoryAria: (name: string) => `カテゴリ「${name}」`,
     categoryFilterGroupAria: "カテゴリの選択（複数選択可）",
   },
@@ -166,7 +182,6 @@ export const TEXTS = {
 
   // ------------------------------------------------------------ キャラ設定の閲覧シート
   characterSettings: {
-    title: "キャラ設定",
     displayName: "表示名",
     originalName: "元の名前",
     sourceProfileId: "取り込み元ID",
@@ -180,12 +195,11 @@ export const TEXTS = {
       "特定の発言ではなく、このキャラクターの設定全体に対する指摘を送れます。送信すると、AIが設定全体を見直して自動で適用します。結果と差分はレビュー履歴に残り、履歴から取り消せます。",
     reviewLabel: "設定全体への指摘",
     reviewPlaceholder: "例: 一人称は「オレ様」のはずが、設定の話し方では「ボク」になっている",
-    reviewRequired: "指摘を入力してください。",
-    reviewSubmit: "レビューを送る",
-    reviewSending: "送信中…",
-    reviewRegistered:
-      "レビューを登録しました。見直しが終わると設定へ自動で反映されます。結果はレビュー履歴で確認できます。",
-    reviewFailed: "レビューの送信に失敗しました",
+    reviewRequired: REVIEW_REQUIRED,
+    reviewSubmit: REVIEW_SUBMIT,
+    reviewSending: REVIEW_SENDING,
+    reviewRegistered: REVIEW_REGISTERED,
+    reviewFailed: REVIEW_FAILED,
     reviewOpenHistory: "レビュー履歴を見る",
   },
 
@@ -235,7 +249,7 @@ export const TEXTS = {
     hintOnePerLine: "1行に1件ずつ入力してください。",
     hintPortrayalFocus: "このキャラクターを演じる前提の姿・状況です。空欄なら指定なしです。",
     hintVideoNotes:
-      "参考動画の台詞から得た口調の所見です。参考資料であり正本ではありません。",
+      "参考動画の台詞から得た口調の所見です。参考資料であり、台詞や言い回しの正本ではありません。",
     elementKeyAria: (i: number) => `見た目の要素${i + 1}の項目名`,
     elementValueAria: (i: number) => `見た目の要素${i + 1}の内容`,
     elementDeleteAria: (i: number) => `見た目の要素${i + 1}を削除`,
@@ -253,7 +267,7 @@ export const TEXTS = {
   // ------------------------------------------------------------ 表示名の変更シート
   renameCharacter: {
     title: "表示名を変更",
-    description: "一覧やチャットで表示される名前を変えます（設定には影響しません）。",
+    description: "一覧やチャットで表示される名前だけを変えます（設定や会話履歴には影響しません）。",
     label: "表示名",
     nameRequired: "表示名を入力してください。",
   },
@@ -263,11 +277,11 @@ export const TEXTS = {
     title: "カテゴリ管理",
     closeAria: "カテゴリ管理を閉じる",
     description:
-      "カテゴリはキャラ一覧の絞り込みに使います。\n1キャラに複数のカテゴリを設定でき、各キャラへの割り当てはキャラの設定メニュー「カテゴリを設定」から行います。",
+      "カテゴリはキャラ一覧の絞り込みに使います。親カテゴリを設定して子カテゴリを作れ、親で絞り込むと子・孫のキャラもまとめて表示されます。\n1キャラに複数のカテゴリを設定でき、各キャラへの割り当てはキャラの設定メニュー「カテゴリを設定」から行います。",
     newNameLabel: "新しいカテゴリ名",
     namePlaceholder: "例: ゲーム",
     parentLabel: "親カテゴリ",
-    topLevelOption: "Root",
+    topLevelOption: "最上位（親なし）",
     add: "追加",
     adding: "追加中…",
     empty: "まだカテゴリがありません。",
@@ -291,7 +305,7 @@ export const TEXTS = {
     sheetAria: (name: string) => `${name}のカテゴリを設定`,
     title: (name: string) => `${name}のカテゴリ`,
     description:
-      "複数のカテゴリを選べます。複数に登録したキャラは、どのカテゴリで絞り込んでも表示されます。何も選ばなければ未分類になります。",
+      "複数のカテゴリを選べます。複数に登録したキャラは、どのカテゴリで絞り込んでも表示されます。子カテゴリに登録したキャラは、その親カテゴリで絞り込んだ時にも表示されます。ただし、子カテゴリとその親カテゴリは同時には選べません（子を選ぶと親は自動で外れます）。何も選ばなければ未分類になります。",
     blockedByChild: (name: string) => `子カテゴリ「${name}」を選択中のため選べません`,
     currentlyUncategorized: "現在は未分類です（カテゴリ未選択）。",
     setFailed: "設定に失敗しました",
@@ -340,23 +354,21 @@ export const TEXTS = {
     targetLabel: (speakerName: string) => `レビュー対象（${speakerName}の発言）`,
     cancelSelectionAria: "レビューの選択をやめる",
     feedbackLabel: "設定と異なっている点",
-    feedbackPlaceholder: "例: 一人称は「私」のはずが「ボク」になっている",
-    feedbackRequired: "指摘を入力してください。",
-    sending: "送信中…",
-    submit: "レビューを送る",
+    feedbackPlaceholder: "例: 一人称は「オレ様」のはずが「ボク」になっている",
+    feedbackRequired: REVIEW_REQUIRED,
+    sending: REVIEW_SENDING,
+    submit: REVIEW_SUBMIT,
     openHistoryForChar: "このキャラのレビュー履歴",
     panelNote:
       "送信すると、AIがキャラ設定を見直して自動で適用します。結果と差分、改訂の意図はレビュー履歴に残ります。",
     selectMessageAria: (excerpt: string) => `この発言をレビュー対象に選ぶ: ${excerpt}`,
-    registeredNotice:
-      "レビューを登録しました。見直しが終わると設定へ自動で反映されます。結果はレビュー履歴で確認できます。",
-    submitFailed: "レビューの送信に失敗しました",
+    registeredNotice: REVIEW_REGISTERED,
+    submitFailed: REVIEW_FAILED,
     reviewModeNote: "レビューモードが有効です。メッセージ生成前にレビューを開始します。",
     chatBanner: "レビューモード中です。キャラの発言をタップして選ぶと、設定と違う点を指摘できます。",
     groupBanner:
       "レビューモード中です。キャラの発言をタップして選ぶと、そのキャラの設定への指摘ができます。",
     historyButton: "レビュー履歴",
-    historyButtonFor: (name: string) => `${name}のレビュー履歴`,
   },
 
   // ------------------------------------------------------------ レビュー履歴シート
@@ -364,7 +376,7 @@ export const TEXTS = {
     title: (name: string) => `${name}のレビュー履歴`,
     closeAria: "レビュー履歴を閉じる",
     description:
-      "指摘を受けてAIが見直した結果です。各見直しには、改訂の意図もあわせて残ります。差分があった見直しは自動で設定に適用されています。",
+      "指摘を受けてAIが見直した結果です。各見直しには、改訂の意図（何を狙ってどう変えたか）もあわせて残ります。差分があった見直しは自動で設定に適用されています。適用済みの改訂は、変更前の設定へ取り消せます。",
     empty:
       "まだレビューはありません。レビューモードでキャラの発言を選んで指摘を送るか、「設定を編集する」画面から設定全体へのレビューを送ると、ここに記録されます。",
     revertFailed: "取り消しに失敗しました",
@@ -379,11 +391,13 @@ export const TEXTS = {
     autoFeedbackHeading: "自動レビューの方針",
     settingsTargetBody: "（特定の発言ではなく、設定全体へのレビューです）",
     feedbackHeading: "指摘",
-    intentHeading: "改訂の意図",
-    failedNoteSuffix: "（設定は変更されていません）",
+    intentHeading: REVIEW_INTENT_HEADING,
+    failedNoteSuffix: REVIEW_FAILED_NOTE_SUFFIX,
     failDetailLabel: (detail: string) => `詳細: ${detail}`,
-    noChangeNote: "見直しの結果、設定の変更はありませんでした。",
-    diffHeading: (n: number) => `設定の差分（${n}件）`,
+    noChangeNote: REVIEW_NO_CHANGE_NOTE,
+    diffHeading: REVIEW_DIFF_HEADING,
+    diffEmpty: "（なし）",
+    diffDeleted: "（削除）",
     diffBefore: "変更前: ",
     diffAfter: "変更後: ",
     diffChangedPart: "変わった部分",
@@ -414,10 +428,10 @@ export const TEXTS = {
       failed: "失敗",
     } as Record<string, string>,
     waitingNote: "まだ見直しが終わっていません。終わると結果がここに表示されます。",
-    noChangeNote: "見直しの結果、設定の変更はありませんでした。",
-    failedNoteSuffix: "（設定は変更されていません）",
-    intentHeading: "改訂の意図",
-    diffHeading: (n: number) => `設定の差分（${n}件）`,
+    noChangeNote: REVIEW_NO_CHANGE_NOTE,
+    failedNoteSuffix: REVIEW_FAILED_NOTE_SUFFIX,
+    intentHeading: REVIEW_INTENT_HEADING,
+    diffHeading: REVIEW_DIFF_HEADING,
     revertedNote: "この改訂はレビュー履歴から取り消されています。",
     historyHint: "差分の詳細と取り消しは、各キャラのレビュー履歴から行えます。",
   },
@@ -461,14 +475,14 @@ export const TEXTS = {
     createGroup: "グループを作る",
     randomCreateNow: "今すぐランダム作成",
     randomCreating: "作成中…",
-    randomCreateNowDesc: "押した瞬間にランダムな顔ぶれで作ります",
+    randomCreateNowDesc: "押した瞬間に、ランダムな顔ぶれで作ります",
     randomCreateBySchedule: "スケジュールで自動作成",
-    randomCreateByScheduleDesc: "決めた時刻に自動で作り続けます",
+    randomCreateByScheduleDesc: "決めた時刻に、自動で作り続けます",
     randomCreateNeedChars: (n: number) =>
       `グループを自動作成するにはキャラクターが3人以上必要です（現在${n}人）。キャラを追加してください。`,
     groupCreateFailed: "グループの作成に失敗しました",
     noGroups:
-      "グループはまだありません。",
+      "キャラ同士の掛け合いを楽しむグループは、まだありません。1人から作れて、なりきり機能で自分も参加できます。",
     openGroupAria: (name: string, unread: number) =>
       `グループ「${name}」を開く${unread > 0 ? `（未読の返信${unread}件）` : ""}`,
     groupMenuAria: (name: string) => `グループ「${name}」のメニュー`,
@@ -482,23 +496,26 @@ export const TEXTS = {
     pageIndicator: (page: number, count: number, total: number) =>
       `${page} / ${count} ページ（全${total}件）`,
     footerNote:
-      "発言を送るとAIが自動で返信を書きます（数分かかることがあります）。生成に渡される履歴は直近20発言までで、それより前の会話は参照されません。会話ログはこのアプリ内に保存されます。アプリを削除するとログは消えます。",
+      "発言を送ると、全体設定で選んだAIが自動で返信を書きます（数分かかることがあります）。返信に失敗した時は、送った文章が入力欄に戻るので、そのまま再送信できます。生成に渡される履歴は直近20発言までで、それより前の会話は参照されません。会話ログはこのアプリ内に保存されます。外部へのバックアップは無いため、アプリを削除するとログも消えます。",
     globalSettingsAria: "全体設定",
     globalSettingsHeading: "全体設定",
     notifyReply: "返信が届いたらMuseに通知する",
     notifyReplyDesc:
-      "ONにすると、キャラからの返信が届いた時に、Muse側へメッセージが送られます。なお、Claudeのログイン切れ（トークン切れ）で生成に失敗した場合は、この設定がOFFでも通知されます。",
+      "ONにすると、キャラからの返信（スケジューリングの自動生成も含む）が届いた時に、Muse側へメッセージが送られます。なお、Claudeのログイン切れ（トークン切れ）で生成に失敗した場合は、この設定がOFFでも通知されます。",
     replyEngine: "返信を考えるAI",
     replyEngineDesc:
-      "すべてのチャット・グループの返信生成に使うAIです。レビューの見直しと「自動」の議題作成には影響しません。使ったAIは履歴の生成記録の見出しに残ります。",
+      "すべてのチャット・グループの返信生成に使うAIです。レビューの見直しと「自動」の議題作成には影響しません。使ったAIは履歴（全体ログ）の生成記録の見出しに残ります。",
     engineClaude: "Claude",
     engineMuse: "Muse",
     claudeModel: "Claudeのモデル",
     claudeModelAuto: "自動（auto）",
+    claudeModelSonnet: "Sonnet",
+    claudeModelOpus: "Opus",
+    claudeModelHaiku: "Haiku",
     engineClaudeCaution:
-      "Claudeの注意点: 生成にはClaudeの契約とログインが必要です。ログインが切れると返信が作れなくなります。生成はあなたの普段の会話とは完全に切り離されたヘッドレス実行で行われるため、普段の会話の記憶や人格がキャラの返信に混ざることはありません。キャラ設定と会話履歴だけを材料に返信を作ります。",
+      "Claudeの注意点: 生成にはClaude（Claude Code）の契約とログインが必要です。ログインが切れると返信が作れなくなります（その場合は通知が届きます）。その代わり、生成はあなたの普段の会話とは完全に切り離されたヘッドレス実行で行われるため、普段の会話の記憶や人格がキャラの返信に混ざることはありません。キャラ設定と会話履歴だけを材料に、専用の生成プロセスが返信を作ります。",
     engineMuseCaution:
-      "Museの注意点: 生成は実行側のMuseがそのまま自分で考えて行います。実行側は生成専用ではなく仲介の作業と兼務でエージェント側で要約されて渡ることもあるため、専用の生成プロセスで作るClaudeよりキャラの再現精度が落ちることがあります。また、実行側のモデルはこのアプリからは選べません。",
+      "Museの注意点: 返信は、返信の見張りと受け渡しを担っている実行側のClaude（Muse）が、そのまま自分で考えて代入します。実行側は生成専用ではなく見張り・仲介の作業と兼務で、長い材料はエージェント側で要約・圧縮されて渡ることもあるため、専用の生成プロセスで作るClaudeより、キャラの口調や設定の再現精度が落ちることがあります。また、実行側のモデルは実行環境で固定されていて、このアプリからは選べません。",
     globalSettingsSaveFailed: "設定の保存に失敗しました。もう一度お試しください。",
     logsLink: "履歴（全体ログ）",
     deleteCharacterTitle: (name: string) => `${name}を削除しますか？`,
@@ -511,7 +528,7 @@ export const TEXTS = {
     weekdayLabels: ["日", "月", "火", "水", "木", "金", "土"],
     freqDaily: "毎日",
     freqWeekly: (days: string) => `毎週 ${days}`,
-    targetExisting: (name: string) => `グループ「${name}」`,
+    targetExisting: GROUP_TARGET_NAME,
     targetMissing: "（対象グループなし）",
     targetNew: "毎回新規チャット",
     drawFromCategories: (min: number, max: number) => `カテゴリから${min}〜${max}人を抽選`,
@@ -524,7 +541,7 @@ export const TEXTS = {
     heading: "スケジューリング",
     create: SCHEDULE_CREATE,
     description:
-      "決まった時刻になると、対象のグループチャットでキャラクター同士の会話を自動で生成します。",
+      "決まった時刻になると、対象のグループチャットでキャラクター同士の会話を自動で生成します。スケジュールは複数作れます。",
     loadFailed: "スケジュールの読み込みに失敗しました。",
     empty: "まだスケジュールがありません。「スケジュールを作成」から追加できます。",
     enabledAria: (name: string) => `スケジュール「${name}」の有効・無効`,
@@ -556,7 +573,7 @@ export const TEXTS = {
     targetTypeAria: "対象の種類",
     targetExistingLabel: "既存のグループチャット",
     targetExistingDesc:
-      "選んだグループの設定を使って、その中で会話を生成します",
+      "選んだグループの設定（参加者・ゲスト/モブ・ナレーション・フレーバー）を使って、その中で会話を生成します",
     targetNewLabel: "毎回新規チャット",
     targetNewDesc: "実行のたびに新しいグループを作り、カテゴリから抽選したキャラで会話を生成します",
     targetGroupLabel: "対象のグループチャット",
@@ -574,11 +591,11 @@ export const TEXTS = {
     maxMembersAria: "人数の最大",
     autoTopicStartLabel: "冒頭に議題を自動投稿",
     autoTopicStartNote:
-      "オンにすると、発火したとき通常の冒頭生成の代わりに、会話の冒頭で「自動」ボタンが押されたときと同じ処理を行います。議題を生成して投稿します。",
+      "オンにすると、発火したとき通常の冒頭生成の代わりに、会話の冒頭で「自動」ボタンが押されたときと同じ処理を行います。議題を生成して投稿し、そこから掛け合いが始まります。",
     guestMobNarrationHeading: "ゲスト・モブ・ナレーション（作成されるグループに引き継がれます）",
     flavorsHeading: "フレーバー（作成されるグループに引き継がれます）",
     flavorsNote:
-      "ここで指定したフレーバー一式が正で、作成されるグループへそのまま引き継がれます。",
+      "ここで指定したフレーバー一式が正で、作成されるグループへそのまま引き継がれます（グループ側で変えても、こちらには戻りません）。",
     nameRequired: "スケジュール名を入力してください。",
     timeRequired: "生成時刻を1つ以上入れてください。",
     weekdayRequired: "曜日を1つ以上選んでください。",
@@ -671,14 +688,14 @@ export const TEXTS = {
     namePlaceholder: "空欄なら参加キャラ名から自動で付けます",
     autoTitleLabel: "名前はおまかせ",
     autoTitleDesc:
-      "オンにすると、返信が生成されるたびに、その掛け合いの内容を要約したタイトルがグループ名に代入されます。",
+      "オンにすると、返信が生成されるたびに、その掛け合いの内容を要約したタイトルがグループ名に代入されます（入力した名前は最初の名前として使われます）。",
     membersHeading: "参加キャラクター（1〜8人）",
     membersNote:
       "1人だけでも作れます。作成後に「なりきり」を設定すると、自分がそのキャラとして参加できます。",
     joinAria: (name: string) => `${name}を参加させる`,
     guestMobNarrationHeading: "ゲスト・モブ・ナレーション",
     guestMobNarrationNote:
-      "オンにすると、会話の流れに応じて参加者以外が混じることがあります。作成後もグループの設定から変えられます。",
+      "オンにすると、会話の流れに応じて参加者以外が混じることがあります（混じらないこともあります）。作成後もグループの設定から変えられます。",
     guestLabel: "ゲスト（参加していないキャラが名前つきで入ることがある）",
     mobLabel: "モブ（住民・生徒などの名前のない人々が入ることがある）",
     narrationLabel: "ナレーション（背景説明・場面転換・時間経過の説明が入ることがある）",
@@ -709,16 +726,16 @@ export const TEXTS = {
     } as Record<string, string>,
     hint: "トークの前ならランダムな議題、トーク中なら会話にちなんだ議題を出します。たまに無関係な話も出ます。",
     cardHeading: (label: string | undefined) => (label ? `自動（${label}）` : "自動"),
-    sheetAria: "自動の設定",
-    sheetTitle: "自動の設定",
+    sheetAria: AUTO_TOPIC_SETTINGS,
+    sheetTitle: AUTO_TOPIC_SETTINGS,
     sheetIntro: (hint: string) =>
-      `「自動」は、話題を自動で出してくれる機能です。${hint}出所は、時事ネタ（人気記事から）・キャラのプロフィールや興味・季節や今日は何の日・もしも、二択・キャラ同士の対比などです。`,
+      `「自動」は、話題を自動で出してくれる機能です。${hint}出所は、時事ネタ（人気記事から）・キャラのプロフィールや興味・季節や今日は何の日・もしもや二択・キャラ同士の対比などです。`,
     sheetAutoPostDesc:
       "自動投稿をオンにすると、会話が一区切りして、あなたの入力待ちのまま30分動きがなかった時に、議題が1つ自動で投稿されてキャラクターが反応します。あなたの発言がないままの自動投稿は連続3回までで止まり、あなたが発言すると数え直します。生成中・返信待ちの間は投稿されません。",
     autoPostToggleAria: "自動の自動投稿をオンにする",
     autoPostLabel: "自動投稿",
     autoPostDesc: "入力待ちが30分続いたら、議題を自動で投稿します（既定はオフ）。",
-    menuLabel: "自動の設定",
+    menuLabel: AUTO_TOPIC_SETTINGS,
     menuDescChat:
       "トークの前ならランダム、トーク中なら会話にちなんだ議題を自動で出します。入力待ちが30分続いた時の自動投稿もここで設定します（このキャラとの会話だけの設定です）",
     postFailed: "議題の投下に失敗しました",
@@ -727,12 +744,11 @@ export const TEXTS = {
     buttonLabel: "自動",
     buttonHint: (hint: string) => `「自動」: ${hint}`,
     chatTargetName: (name: string) => `${name}とのチャット`,
-    groupTargetName: (name: string) => `グループ「${name}」`,
+    groupTargetName: GROUP_TARGET_NAME,
   },
 
   // ------------------------------------------------------------ 1対1チャット
   chat: {
-    imageChange: "画像変更",
     clearHistory: "履歴クリア",
     export: "全文出力",
     historyToggleAria: "過去の履歴を使うかどうかを切り替える",
@@ -763,7 +779,7 @@ export const TEXTS = {
   roleplay: {
     title: "なりきり設定",
     description:
-      "自分がなりきるキャラクターを選ぶと、あなたの送信がそのキャラクター自身の発言になります。",
+      "自分がなりきるキャラクターを選ぶと、あなたの送信がそのキャラのアイコンと名前の付いた吹き出しになります（自分が書いた物だと分かるよう、色は通常の送信と同じ色になります）。",
     characterHeading: "なりきるキャラクター",
     noneAria: "なりきらない",
     noneLabel: "なりきらない（未選択）",
@@ -771,10 +787,10 @@ export const TEXTS = {
     linesHeading: "なりきりキャラの台詞",
     aiAlsoLabel: "AIも演じる",
     aiAlsoDesc:
-      "続きのなりきりキャラの台詞もAIが考えて続けます。なりきりキャラはあなたとAIの共同になります。",
+      "AIが返信し、その後のなりきりキャラの台詞もAIが考えて続けます。なりきりキャラは、あなたとAIの共同になります。",
     selfOnlyLabel: "自分だけが演じる",
     selfOnlyDesc:
-      "AIは他のキャラだけで返信して続けます。なりきりキャラの台詞はAIは書きません。",
+      "AIは他のキャラだけで返信して続けます。なりきりキャラの台詞はAIは書きません。そのキャラが話すのは、あなたが打った時だけです。",
     apply: "設定する",
   },
 
@@ -783,32 +799,32 @@ export const TEXTS = {
     menuAria: "グループ設定メニュー",
     title: (name: string) => `${name}の設定`,
     rename: "グループチャットの名前を変える",
-    renameDesc: "このグループの表示名を変更します",
+    renameDesc: "このグループの表示名を変更します（参加者や会話履歴には影響しません）",
     editMembers: "グループチャットの参加者を変える",
     editMembersDesc:
-      "参加キャラクターを1〜8人の間で増やしたり減らしたりできます",
-    guestMob: "オプション設定",
+      "参加キャラクターを1〜8人の間で増やしたり減らしたりできます（会話履歴は残ります）",
+    guestMob: "生成内容の設定",
     guestMobDesc:
-      "会話生成のルールを設定します。",
-    autoTopic: "自動の設定",
+      "参加者以外のキャラクター（ゲスト）や名前のない人々（モブ）が会話に混じることがあるかと、背景説明・場面転換のナレーションを入れるかを選びます",
+    autoTopic: AUTO_TOPIC_SETTINGS,
     autoTopicDesc:
-      "トーク前ならランダム、トーク中なら会話にちなんだ議題を自動で出します。入力待ちが30分続いた時の自動投稿もここで設定します。",
+      "トークの前ならランダム、トーク中なら会話にちなんだ議題を自動で出します。入力待ちが30分続いた時の自動投稿もここで設定します（このグループだけの設定です）",
     deleteGroup: "グループを削除",
     deleteGroupDesc: GROUP_DELETE_DESC,
   },
 
   // ------------------------------------------------------------ 生成内容の設定シート（ゲスト・モブ・ナレーション）
   groupGuestMob: {
-    title: "オプション設定",
-    intro: "生成される会話に細かい設定を組み込む事が出来ます",
+    title: "生成内容の設定",
+    intro: "オンにすると、会話の流れに応じて参加者以外のキャラや人々が混じることがあります。",
     guestLabel: "ゲスト",
     guestDesc:
-      "参加していないキャラクターが会話に入ることがあります。同じカテゴリのキャラクター達の設定も同時に送信します。",
+      "参加していないキャラクターが会話に入ることがあります。登録済みのキャラクターは、その設定を参考にします。",
     mobLabel: "モブ",
-    mobDesc: "名前のない人々が会話に入ることがあります。",
+    mobDesc: "名前のない人々が、一般名詞の表記で会話に入ることがあります。",
     narrationLabel: "ナレーション",
     narrationDesc:
-      "背景説明や時間経過の説明が、誰の台詞でもない形で入ることがあります。",
+      "背景説明・場面転換・時間経過の説明が、誰の台詞でもない形で入ることがあります。吹き出しではなく、中央揃えで表示されます。",
   },
 
   // ------------------------------------------------------------ フレーバー（旧「背景情報」）
@@ -818,7 +834,7 @@ export const TEXTS = {
     buttonAria: "フレーバーを選ぶ",
     title: "フレーバー",
     description:
-      "このチャットの生成のルールを加えます。過去の会話が内容に沿っていなくても、今後は必ず内容が優先されます。",
+      "フレーバーツールで出力されたテキストを貼ると、このチャットの生成に絶対のルールとして添えられます。複数指定できます。過去の会話が内容に沿っていなくても、今後は必ず内容が優先されます。キャラクター自身はこの内容を知っているわけではなく、台詞で直接口にすることはありません。",
     currentHeading: "指定中のフレーバー",
     empty: "まだフレーバーは指定されていません。",
     remove: "外す",
@@ -848,7 +864,7 @@ export const TEXTS = {
     nameRequired: "グループ名を入力してください。",
     autoTitleLabel: "名前はおまかせ",
     autoTitleDesc:
-      "オンにすると、返信が生成されるたびに内容を要約したタイトルがグループ名に代入されます。",
+      "オンにすると、返信が生成されるたびに、その掛け合いの内容を要約したタイトルがグループ名に代入され直します。",
   },
 
   // ------------------------------------------------------------ 参加者変更シート

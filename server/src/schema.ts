@@ -29,13 +29,6 @@ const historyBoundarySeqCol = () => integer("history_boundary_seq").notNull().de
 const currentSegmentNoCol = () => integer("current_segment_no").notNull().default(1);
 const autoTopicEnabledCol = () => integer("auto_topic_enabled").notNull().default(0);
 const autoTopicCountCol = () => integer("auto_topic_count").notNull().default(0);
-// 自動レビュー（2026-11-27、生成前方式へ 2026-11-28 変更）: 手動で
-// メッセージを送るたびに、返信生成の前に、そのメッセージだけを材料に
-// したレビューが自動で走り、更新後の設定で返信が生成される。
-// 起動方式の再変更（2026-11-28）: キャラごとの ON/OFF は廃止し、起動条件は
-// 「送信時にチャット画面のレビューモードが ON だったこと」だけになった。
-// このカラムは互換のため残すだけで、起動判定には使われない。
-const autoReviewCol = () => integer("auto_review").notNull().default(0);
 const noHistoryCol = () => integer("no_history").notNull().default(0);
 const segmentNoCol = () => integer("segment_no").notNull().default(1);
 const failReasonCol = () => text("fail_reason").notNull().default("");
@@ -99,7 +92,8 @@ export const characters = sqliteTable("characters", {
   // 自動レビュー（2026-11-27）: 旧・キャラごとの ON/OFF。2026-11-28 の
   // 起動方式変更で起動判定には使われなくなった（カラムのみ残置）。自動
   // レビューの詳細は reviews.review_kind = "auto" の行を参照。
-  autoReview: autoReviewCol(),
+  // このテーブルでしか使わないため、共通ファクトリへは寄せずここへ直接書く。
+  autoReview: integer("auto_review").notNull().default(0),
   createdAt: createdAtCol(),
 });
 

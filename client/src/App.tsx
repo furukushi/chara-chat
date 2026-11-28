@@ -9,6 +9,7 @@ import {
   pruneAncestorCategoryIds as pruneAncestorCategoryIdsShared,
   type CategoryTreeNode,
 } from "../../server/src/category-tree";
+import { flavorTitle } from "../../server/src/flavor";
 import { api, type ApiResponse } from "./api";
 import { TEXTS as T } from "./display-texts";
 
@@ -27,6 +28,7 @@ type GroupItem = Home["groups"][number];
 type ChatState = ApiResponse<typeof api, "getChatState">;
 type GroupState = ApiResponse<typeof api, "getGroupState">;
 type RequestInfo = ChatState["request"];
+type GlobalSettings = ApiResponse<typeof api, "getGlobalSettings">;
 
 type View =
   | { kind: "home" }
@@ -236,15 +238,52 @@ function StatusBadge({ status, reviewing }: { status: string; reviewing?: boolea
   return null;
 }
 
+/** カテゴリチップ列（個人一覧の行／カードで共用。align で寄せ方向だけ変える）。 */
+function CategoryChips({ ids, nameById, align }: { ids: number[]; nameById: Map<number, string>; align: "end" | "center" }) {
+  if (ids.length === 0) return null;
+  return (
+    <span className={`flex flex-wrap gap-1 ${align === "end" ? "shrink-0 justify-end" : "justify-center"}`}>
+      {ids.map((cid) => nameById.get(cid) ? (
+        <span key={cid} className="rounded-full px-2 py-0.5 text-xs font-bold" style={{ background: "var(--surface-alt)", color: "var(--dim)" }}>
+          {nameById.get(cid)}
+        </span>
+      ) : null)}
+    </span>
+  );
+}
+
+/** 未読件数バッジ（アバター右上の赤丸）。size で行用（小）／カード用（大）を切り替える。 */
+function UnreadBadge({ count, size }: { count: number; size: "sm" | "lg" }) {
+  if (count <= 0) return null;
+  return (
+    <span
+      className={`absolute -top-1 -right-1 flex items-center justify-center rounded-full px-1 font-black text-white ${size === "sm" ? "h-5 min-w-5 text-[11px]" : "h-6 min-w-6 text-xs"}`}
+      style={{ background: "var(--danger)" }}
+    >
+      {count}
+    </span>
+  );
+}
+
+/** 未返信バッジ（返信待ちでない時に、未返信の利用者発言が残っている印）。 */
+function UnrepliedBadge({ count, status }: { count: number; status: string }) {
+  if (count <= 0 || status !== "none") return null;
+  return (
+    <span className="shrink-0 rounded-full px-2 py-0.5 text-xs font-bold" style={{ background: "var(--accent-soft)", color: "var(--gold)" }}>
+      {T.status.unreplied(count)}
+    </span>
+  );
+}
+
 function RequestBanner({ request, isGroup }: { request: RequestInfo; isGroup?: boolean }) {
   const now = useNow(request.status === "pending" || request.status === "processing" || request.reviewing);
+  const elapsed = request.requested_at
+    ? elapsedSecondsSince(request.requested_at, now)
+    : request.elapsed_seconds;
   if (request.status === "none") {
     // 進行中のリクエストが無くても、自動レビューだけが実行中（返信生成が
     // 行われないなりきり投稿の単独レビュー）の間は「レビュー中」を出す。
     if (!request.reviewing) return null;
-    const elapsed = request.requested_at
-      ? elapsedSecondsSince(request.requested_at, now)
-      : request.elapsed_seconds;
     return (
       <div className="mx-3 mt-2 rounded-xl px-3 py-2 text-sm" style={{ background: "var(--accent-soft)", color: "var(--text)" }} role="status">
         {T.requestBanner.reviewing(formatElapsed(elapsed))}
@@ -256,14 +295,11 @@ function RequestBanner({ request, isGroup }: { request: RequestInfo; isGroup?: b
       <div className="mx-3 mt-2 rounded-xl px-3 py-2 text-sm" style={{ background: "var(--accent-soft)", color: "var(--danger)" }} role="status">
         <p>{failReasonLabel(request.fail_reason)}{T.requestBanner.failedSuffix}</p>
         {request.fail_detail ? (
-          <p className="mt-1 text-xs whitespace-pre-wrap break-words" style={{ color: "var(--dim)" }}>詳細: {request.fail_detail}</p>
+          <p className="mt-1 text-xs whitespace-pre-wrap break-words" style={{ color: "var(--dim)" }}>{T.reviewHistory.failDetailLabel(request.fail_detail)}</p>
         ) : null}
       </div>
     );
   }
-  const elapsed = request.requested_at
-    ? elapsedSecondsSince(request.requested_at, now)
-    : request.elapsed_seconds;
   return (
     <div className="mx-3 mt-2 rounded-xl px-3 py-2 text-sm" style={{ background: "var(--accent-soft)", color: "var(--text)" }} role="status">
       {request.status === "processing"
@@ -288,6 +324,18 @@ function TopicCard({ body, source }: { body: string; source: string }) {
         {T.autoTopic.cardHeading(label)}
       </p>
       <p className="mt-1 text-base whitespace-pre-wrap" style={{ color: "var(--text)" }}>{body}</p>
+    </div>
+  );
+}
+
+/** 閉じるボタンつきの通知帯（チャット画面下部のレビュー結果・送信取り消し
+ * 結果の表示で共用）。text が空なら何も表示しない。 */
+function DismissibleNotice({ text, onDismiss }: { text: string; onDismiss: () => void }) {
+  if (!text) return null;
+  return (
+    <div className="mb-2 flex items-start gap-2 rounded-xl px-3 py-2" style={{ background: "var(--accent-soft)" }} role="status">
+      <p className="min-w-0 flex-1 text-sm" style={{ color: "var(--text)" }}>{text}</p>
+      <button type="button" onClick={onDismiss} aria-label={T.chat.closeNoticeAria} className="shrink-0 text-sm font-bold" style={{ color: "var(--dim)" }}>×</button>
     </div>
   );
 }
@@ -416,7 +464,7 @@ function AutoTopicSheet({
     onError: (e) => setError(errMsg(e, T.common.saveFailed)),
   });
   return (
-    <div className="sheet-overlay fixed inset-0 z-50 flex items-center justify-center p-4" style={{ background: "rgba(10,6,20,0.55)" }} role="dialog" aria-modal="true" aria-label={T.autoTopic.sheetAria}>
+    <div className="sheet-overlay" role="dialog" aria-modal="true" aria-label={T.autoTopic.sheetAria}>
       <div className="max-h-full w-full max-w-md overflow-y-auto rounded-3xl p-5" style={{ background: "var(--surface)" }}>
         <h2 className="font-display text-lg font-bold" style={{ color: "var(--text)" }}>{T.autoTopic.sheetTitle}</h2>
         <p className="mt-1 text-sm" style={{ color: "var(--dim)" }}>{targetName}</p>
@@ -563,20 +611,9 @@ function ExportSheet({
     }
   };
   return (
-    <div className="sheet-overlay fixed inset-0 z-50 flex items-center justify-center p-4" style={{ background: "rgba(10,6,20,0.55)" }} role="dialog" aria-modal="true" aria-label={title}>
+    <div className="sheet-overlay" role="dialog" aria-modal="true" aria-label={title}>
       <div className="flex max-h-full w-full max-w-md flex-col rounded-3xl p-5" style={{ background: "var(--surface)" }}>
-        <div className="flex items-start justify-between gap-3">
-          <h2 className="font-display text-lg font-bold" style={{ color: "var(--text)" }}>{title}</h2>
-          <button
-            type="button"
-            onClick={onClose}
-            aria-label={T.exportSheet.closeAria}
-            className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-base"
-            style={{ background: "var(--surface-alt)", color: "var(--dim)" }}
-          >
-            ×
-          </button>
-        </div>
+        <SheetHeader title={title} closeAria={T.exportSheet.closeAria} onClose={onClose} />
         <p className="mt-1 text-xs leading-relaxed" style={{ color: "var(--dim)" }}>
           {T.exportSheet.description}
         </p>
@@ -634,7 +671,7 @@ function ConfirmSheet({
   busy?: boolean;
 }) {
   return (
-    <div className="sheet-overlay fixed inset-0 z-50 flex items-center justify-center p-4" style={{ background: "rgba(10,6,20,0.55)" }} role="dialog" aria-modal="true" aria-label={title}>
+    <div className="sheet-overlay" role="dialog" aria-modal="true" aria-label={title}>
       <div className="max-h-full w-full max-w-md overflow-y-auto rounded-3xl p-5" style={{ background: "var(--surface)" }}>
         <h2 className="font-display text-lg font-bold" style={{ color: "var(--text)" }}>{title}</h2>
         <p className="mt-2 text-sm whitespace-pre-wrap" style={{ color: "var(--dim)" }}>{body}</p>
@@ -796,7 +833,7 @@ function ImageEditSheet({
   };
 
   return (
-    <div className="sheet-overlay fixed inset-0 z-50 flex items-center justify-center p-4" style={{ background: "rgba(10,6,20,0.55)" }} role="dialog" aria-modal="true" aria-label={T.imageEdit.title(characterName)}>
+    <div className="sheet-overlay" role="dialog" aria-modal="true" aria-label={T.imageEdit.title(characterName)}>
       <div className="max-h-full w-full max-w-md overflow-y-auto rounded-3xl p-5" style={{ background: "var(--surface)" }}>
         <h2 className="font-display text-lg font-bold" style={{ color: "var(--text)" }}>{T.imageEdit.title(characterName)}</h2>
         <p className="mt-2 text-sm leading-relaxed" style={{ color: "var(--dim)" }}>
@@ -927,6 +964,97 @@ function GearIcon() {
 /** キャラ一覧の設定ボタンから開くメニュー。項目は今後ここへ追加していく。
  * 削除もここから行う（一覧行の×ボタンは廃止）。赤字の項目を選ぶと、呼び出し側が
  * 従来通りの確認ダイアログを挟んでから削除する。 */
+/** シート共通の見出し行（タイトル＋×閉じるボタン）。size はボタンの大きさと
+ * 行の間隔: "lg" は h-9 w-9・gap-3、"sm" は h-8 w-8・gap-2。 */
+function SheetHeader({
+  title,
+  closeAria,
+  onClose,
+  size = "lg",
+}: {
+  title: ReactNode;
+  closeAria: string;
+  onClose: () => void;
+  size?: "lg" | "sm";
+}) {
+  return (
+    <div className={`flex items-start justify-between ${size === "lg" ? "gap-3" : "gap-2"}`}>
+      <h2 className="font-display text-lg font-bold" style={{ color: "var(--text)" }}>{title}</h2>
+      <button
+        type="button"
+        onClick={onClose}
+        aria-label={closeAria}
+        className={
+          size === "lg"
+            ? "flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-base"
+            : "flex h-8 w-8 shrink-0 items-center justify-center rounded-full"
+        }
+        style={{ background: "var(--surface-alt)", color: "var(--dim)" }}
+      >
+        ×
+      </button>
+    </div>
+  );
+}
+
+type MenuSheetItem = { label: string; description: string; onSelect: () => void; danger?: boolean };
+
+/** メニューシート共通の土台（タイトル＋項目ボタン列＋閉じるボタン）。
+ * leading はタイトル左に置く要素（キャラのアバターなど）。titleTruncate は
+ * 長いタイトルを1行で省略表示するかどうか。 */
+function MenuSheet({
+  title,
+  ariaLabel,
+  leading,
+  titleTruncate,
+  items,
+  onClose,
+}: {
+  title: string;
+  ariaLabel: string;
+  leading?: ReactNode;
+  titleTruncate?: boolean;
+  items: MenuSheetItem[];
+  onClose: () => void;
+}) {
+  return (
+    <div className="sheet-overlay" role="dialog" aria-modal="true" aria-label={ariaLabel}>
+      <div className="max-h-full w-full max-w-md overflow-y-auto rounded-3xl p-5" style={{ background: "var(--surface)" }}>
+        {leading ? (
+          <div className="flex items-center gap-3">
+            {leading}
+            <h2 className="font-display min-w-0 flex-1 truncate text-lg font-bold" style={{ color: "var(--text)" }}>{title}</h2>
+          </div>
+        ) : (
+          <h2 className={`font-display text-lg font-bold${titleTruncate ? " min-w-0 truncate" : ""}`} style={{ color: "var(--text)" }}>{title}</h2>
+        )}
+        <div className="mt-4 flex flex-col gap-2">
+          {items.map((item) => (
+            <button
+              key={item.label}
+              type="button"
+              onClick={item.onSelect}
+              className="w-full rounded-2xl px-4 py-3 text-left"
+              style={{ background: "var(--surface-alt)", color: "var(--text)" }}
+            >
+              <span className="block font-bold" style={item.danger ? { color: "var(--danger)" } : undefined}>{item.label}</span>
+              <span className="mt-0.5 block text-xs" style={{ color: "var(--dim)" }}>{item.description}</span>
+            </button>
+          ))}
+        </div>
+        <button
+          type="button"
+          onClick={onClose}
+          className="mt-4 w-full rounded-full px-4 py-2.5 font-bold"
+          style={{ background: "var(--surface)", color: "var(--text)", border: "1px solid var(--border)" }}
+        >
+          {T.common.close}
+        </button>
+      </div>
+    </div>
+  );
+}
+
 function CharacterMenuSheet({
   character,
   onClose,
@@ -955,36 +1083,13 @@ function CharacterMenuSheet({
     { label: T.characterMenu.deleteCharacter, description: T.characterMenu.deleteCharacterDesc, onSelect: onDelete, danger: true },
   ];
   return (
-    <div className="sheet-overlay fixed inset-0 z-50 flex items-center justify-center p-4" style={{ background: "rgba(10,6,20,0.55)" }} role="dialog" aria-modal="true" aria-label={T.characterMenu.menuAria(character.display_name)}>
-      <div className="max-h-full w-full max-w-md overflow-y-auto rounded-3xl p-5" style={{ background: "var(--surface)" }}>
-        <div className="flex items-center gap-3">
-          <Avatar imageUrl={character.image_url} name={character.display_name} themeColor={character.theme_color} size={40} />
-          <h2 className="font-display min-w-0 flex-1 truncate text-lg font-bold" style={{ color: "var(--text)" }}>{T.characterMenu.title(character.display_name)}</h2>
-        </div>
-        <div className="mt-4 flex flex-col gap-2">
-          {items.map((item) => (
-            <button
-              key={item.label}
-              type="button"
-              onClick={item.onSelect}
-              className="w-full rounded-2xl px-4 py-3 text-left"
-              style={{ background: "var(--surface-alt)", color: "var(--text)" }}
-            >
-              <span className="block font-bold" style={item.danger ? { color: "var(--danger)" } : undefined}>{item.label}</span>
-              <span className="mt-0.5 block text-xs" style={{ color: "var(--dim)" }}>{item.description}</span>
-            </button>
-          ))}
-        </div>
-        <button
-          type="button"
-          onClick={onClose}
-          className="mt-4 w-full rounded-full px-4 py-2.5 font-bold"
-          style={{ background: "var(--surface)", color: "var(--text)", border: "1px solid var(--border)" }}
-        >
-          {T.common.close}
-        </button>
-      </div>
-    </div>
+    <MenuSheet
+      title={T.characterMenu.title(character.display_name)}
+      ariaLabel={T.characterMenu.menuAria(character.display_name)}
+      leading={<Avatar imageUrl={character.image_url} name={character.display_name} themeColor={character.theme_color} size={40} />}
+      items={items}
+      onClose={onClose}
+    />
   );
 }
 
@@ -1080,20 +1185,9 @@ function CharacterAdvancedSettingsSheet({
   onClose: () => void;
 }) {
   return (
-    <div className="sheet-overlay fixed inset-0 z-50 flex items-center justify-center p-4" style={{ background: "rgba(10,6,20,0.55)" }} role="dialog" aria-modal="true" aria-label={T.settingsEdit.advancedAria(character.display_name)}>
+    <div className="sheet-overlay" role="dialog" aria-modal="true" aria-label={T.settingsEdit.advancedAria(character.display_name)}>
       <div className="max-h-full w-full max-w-md overflow-y-auto rounded-3xl p-5" style={{ background: "var(--surface)" }}>
-        <div className="flex items-start justify-between gap-3">
-          <h2 className="font-display text-lg font-bold" style={{ color: "var(--text)" }}>{T.settingsEdit.advancedTitle}</h2>
-          <button
-            type="button"
-            onClick={onClose}
-            aria-label={T.common.close}
-            className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-base"
-            style={{ background: "var(--surface-alt)", color: "var(--dim)" }}
-          >
-            ×
-          </button>
-        </div>
+        <SheetHeader title={T.settingsEdit.advancedTitle} closeAria={T.common.close} onClose={onClose} />
         <p className="mt-2 text-sm leading-relaxed" style={{ color: "var(--dim)" }}>
           {T.settingsEdit.advancedIntro}
         </p>
@@ -1119,10 +1213,10 @@ type AutoReviewItem = ApiResponse<typeof api, "getChatState">["auto_reviews"][nu
  * 全体ログの生成記録と同じ分け方・見出し・見た目で2つに分けて見せる。
  * 記録が無い自動レビュー（この記録が始まる前に実行された分など）では
  * 何も表示しない。 */
-function ReviewPromptResponse({ prompt, response }: { prompt: string; response: string }) {
+function ReviewPromptResponse({ prompt, response, wrapperClassName = "mt-3" }: { prompt: string; response: string; wrapperClassName?: string }) {
   if (!prompt && !response) return null;
   return (
-    <div className="mt-3 flex flex-col gap-3">
+    <div className={`${wrapperClassName} flex flex-col gap-3`}>
       {prompt && (
         <div>
           <p className="text-xs font-bold" style={{ color: "var(--dim)" }}>{T.logs.requestHeading}</p>
@@ -1148,28 +1242,15 @@ function ReviewPromptResponse({ prompt, response }: { prompt: string; response: 
  * 変更なし・失敗の状態と、差分・改訂の意図）をキャラごとに表示する。 */
 function AutoReviewResultSheet({ reviews, onClose }: { reviews: AutoReviewItem[]; onClose: () => void }) {
   return (
-    <div className="sheet-overlay fixed inset-0 z-50 flex items-center justify-center p-4" style={{ background: "rgba(10,6,20,0.55)" }} role="dialog" aria-modal="true" aria-label={T.autoReview.resultTitle}>
+    <div className="sheet-overlay" role="dialog" aria-modal="true" aria-label={T.autoReview.resultTitle}>
       <div className="max-h-full w-full max-w-md overflow-y-auto rounded-3xl p-5" style={{ background: "var(--surface)" }}>
-        <div className="flex items-start justify-between gap-2">
-          <h2 className="font-display text-lg font-bold" style={{ color: "var(--text)" }}>{T.autoReview.resultTitle}</h2>
-          <button type="button" onClick={onClose} aria-label={T.autoReview.closeAria} className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full" style={{ background: "var(--surface-alt)", color: "var(--dim)" }}>
-            ×
-          </button>
-        </div>
+        <SheetHeader title={T.autoReview.resultTitle} closeAria={T.autoReview.closeAria} onClose={onClose} size="sm" />
         <div className="mt-4 flex flex-col gap-4">
           {reviews.map((r) => (
             <article key={r.review_id} className="rounded-2xl p-3" style={{ background: "var(--surface-alt)" }}>
               <div className="flex items-center gap-2">
                 <span className="text-sm font-bold" style={{ color: "var(--text)" }}>{r.character_name}</span>
-                <span
-                  className="rounded-full px-2 py-0.5 text-xs font-bold"
-                  style={{
-                    background: "var(--surface)",
-                    color: r.status === "failed" ? "var(--danger)" : r.status === "done" ? "var(--gold)" : "var(--dim)",
-                  }}
-                >
-                  {T.autoReview.statusLabels[r.status] ?? r.status}
-                </span>
+                <ReviewStatusBadge status={r.status} labels={T.autoReview.statusLabels} />
                 {r.reverted_at && (
                   <span className="rounded-full px-2 py-0.5 text-xs font-bold" style={{ background: "var(--surface)", color: "var(--danger)" }}>{T.reviewHistory.revertedBadge}</span>
                 )}
@@ -1177,36 +1258,8 @@ function AutoReviewResultSheet({ reviews, onClose }: { reviews: AutoReviewItem[]
               {(r.status === "pending" || r.status === "processing") && (
                 <p className="mt-2 text-sm" style={{ color: "var(--dim)" }}>{T.autoReview.waitingNote}</p>
               )}
-              {r.status === "failed" && (
-                <>
-                  <p className="mt-2 text-sm" style={{ color: "var(--danger)" }}>{reviewFailLabel(r.fail_reason)}{T.autoReview.failedNoteSuffix}</p>
-                  {r.fail_detail ? (
-                    <p className="mt-1 text-xs whitespace-pre-wrap break-words" style={{ color: "var(--dim)" }}>{T.reviewHistory.failDetailLabel(r.fail_detail)}</p>
-                  ) : null}
-                </>
-              )}
-              {r.status === "no_change" && (
-                <p className="mt-2 text-sm" style={{ color: "var(--dim)" }}>{T.autoReview.noChangeNote}</p>
-              )}
-              {r.intent.trim() && (
-                <>
-                  <p className="mt-3 text-xs font-bold" style={{ color: "var(--dim)" }}>{T.autoReview.intentHeading}</p>
-                  <p className="mt-0.5 text-sm whitespace-pre-wrap" style={{ color: "var(--text)" }}>{r.intent}</p>
-                </>
-              )}
-              {r.diff.length > 0 && (
-                <>
-                  <p className="mt-3 text-xs font-bold" style={{ color: "var(--dim)" }}>{T.autoReview.diffHeading(r.diff.length)}</p>
-                  <div className="mt-1 flex flex-col gap-2">
-                    {r.diff.map((d, i) => (
-                      <div key={i} className="rounded-xl p-2.5" style={{ background: "var(--surface)" }}>
-                        <p className="text-xs font-bold break-all" style={{ color: "var(--gold)" }}>{d.path}</p>
-                        <DiffValuePair before={d.before} after={d.after} />
-                      </div>
-                    ))}
-                  </div>
-                </>
-              )}
+              <ReviewOutcome status={r.status} failReason={r.fail_reason} failDetail={r.fail_detail} intent={r.intent} />
+              <DiffList diff={r.diff} />
               {r.reverted_at && (
                 <p className="mt-2 text-xs" style={{ color: "var(--dim)" }}>{T.autoReview.revertedNote}</p>
               )}
@@ -1631,20 +1684,9 @@ function CharacterSettingsEditSheet({ character, onClose }: { character: Charact
   });
   const o = overview.data;
   return (
-    <div className="sheet-overlay fixed inset-0 z-50 flex items-center justify-center p-4" style={{ background: "rgba(10,6,20,0.55)" }} role="dialog" aria-modal="true" aria-label={T.settingsEdit.sheetAria(character.display_name)}>
+    <div className="sheet-overlay" role="dialog" aria-modal="true" aria-label={T.settingsEdit.sheetAria(character.display_name)}>
       <div className="max-h-full w-full max-w-md overflow-y-auto rounded-3xl p-5" style={{ background: "var(--surface)" }}>
-        <div className="flex items-start justify-between gap-3">
-          <h2 className="font-display text-lg font-bold" style={{ color: "var(--text)" }}>{T.settingsEdit.title}</h2>
-          <button
-            type="button"
-            onClick={onClose}
-            aria-label={T.common.close}
-            className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-base"
-            style={{ background: "var(--surface-alt)", color: "var(--dim)" }}
-          >
-            ×
-          </button>
-        </div>
+        <SheetHeader title={T.settingsEdit.title} closeAria={T.common.close} onClose={onClose} />
         {o && (
           <div className="mt-3 flex flex-col gap-4">
             <h3 className="text-sm font-bold" style={{ color: "var(--text)" }}>{T.settingsEdit.sectionOverview}</h3>
@@ -1748,20 +1790,9 @@ function CharacterSettingsEditSheet({ character, onClose }: { character: Charact
  * 必須で作成できる。作成したキャラは取り込みで追加したキャラと同じ扱い。 */
 function CharacterCreateSheet({ onClose }: { onClose: () => void }) {
   return (
-    <div className="sheet-overlay fixed inset-0 z-50 flex items-center justify-center p-4" style={{ background: "rgba(10,6,20,0.55)" }} role="dialog" aria-modal="true" aria-label={T.createCharacter.sheetAria}>
+    <div className="sheet-overlay" role="dialog" aria-modal="true" aria-label={T.createCharacter.sheetAria}>
       <div className="max-h-full w-full max-w-md overflow-y-auto rounded-3xl p-5" style={{ background: "var(--surface)" }}>
-        <div className="flex items-start justify-between gap-3">
-          <h2 className="font-display text-lg font-bold" style={{ color: "var(--text)" }}>{T.createCharacter.title}</h2>
-          <button
-            type="button"
-            onClick={onClose}
-            aria-label={T.common.close}
-            className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-base"
-            style={{ background: "var(--surface-alt)", color: "var(--dim)" }}
-          >
-            ×
-          </button>
-        </div>
+        <SheetHeader title={T.createCharacter.title} closeAria={T.common.close} onClose={onClose} />
         <div className="mt-3">
           <CharacterSettingsEditForm character={null} initial={EMPTY_SETTINGS_FORM} onClose={onClose} />
         </div>
@@ -1821,7 +1852,7 @@ function RenameSheet({
     rename.mutate(v);
   };
   return (
-    <div className="sheet-overlay fixed inset-0 z-50 flex items-center justify-center p-4" style={{ background: "rgba(10,6,20,0.55)" }} role="dialog" aria-modal="true" aria-label={texts.title}>
+    <div className="sheet-overlay" role="dialog" aria-modal="true" aria-label={texts.title}>
       <div className="max-h-full w-full max-w-md overflow-y-auto rounded-3xl p-5" style={{ background: "var(--surface)" }}>
         <h2 className="font-display text-lg font-bold" style={{ color: "var(--text)" }}>{texts.title}</h2>
         <p className="mt-2 text-sm leading-relaxed" style={{ color: "var(--dim)" }}>
@@ -1940,7 +1971,7 @@ function pruneAncestorCategoryIds(categories: CategoryItem[], ids: number[]): nu
 /** キャラがカテゴリ filterId（その子孫カテゴリを含む）に属するか（v1.26）。 */
 function charMatchesCategory(c: CharacterItem, categories: CategoryItem[], filterId: number): boolean {
   const set = categoryDescendantIdSet(categories, filterId);
-  return charCategoryIds(c).some((cid) => set.has(cid));
+  return c.category_ids.some((cid) => set.has(cid));
 }
 
 /** カテゴリ絞り込みの値: "all" = 全員 / "none" = 未分類のみ / 数値 = そのカテゴリ（子孫カテゴリを含む）。 */
@@ -1949,7 +1980,7 @@ type CategoryFilter = "all" | "none" | number;
 /** キャラがカテゴリ絞り込みに一致するか（一覧・グループ作成・参加者変更で共用）。 */
 function charMatchesFilter(c: CharacterItem, categories: CategoryItem[], filter: CategoryFilter): boolean {
   if (filter === "all") return true;
-  if (filter === "none") return charCategoryIds(c).length === 0;
+  if (filter === "none") return c.category_ids.length === 0;
   return charMatchesCategory(c, categories, filter);
 }
 
@@ -2057,20 +2088,9 @@ function CategoryManageSheet({ categories, onClose }: { categories: CategoryItem
   const editBlockedIds = editing ? categoryDescendantIdSet(categories, editing.id) : new Set<number>();
   const childCountOf = (id: number) => categories.filter((c) => c.parent_id === id).length;
   return (
-    <div className="sheet-overlay fixed inset-0 z-50 flex items-center justify-center p-4" style={{ background: "rgba(10,6,20,0.55)" }} role="dialog" aria-modal="true" aria-label={T.categoryManage.title}>
+    <div className="sheet-overlay" role="dialog" aria-modal="true" aria-label={T.categoryManage.title}>
       <div className="max-h-full w-full max-w-md overflow-y-auto rounded-3xl p-5" style={{ background: "var(--surface)" }}>
-        <div className="flex items-start justify-between gap-3">
-          <h2 className="font-display text-lg font-bold" style={{ color: "var(--text)" }}>{T.categoryManage.title}</h2>
-          <button
-            type="button"
-            onClick={onClose}
-            aria-label={T.categoryManage.closeAria}
-            className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-base"
-            style={{ background: "var(--surface-alt)", color: "var(--dim)" }}
-          >
-            ×
-          </button>
-        </div>
+        <SheetHeader title={T.categoryManage.title} closeAria={T.categoryManage.closeAria} onClose={onClose} />
         <p className="mt-1 text-xs leading-relaxed" style={{ color: "var(--dim)" }}>
           {T.categoryManage.description}
         </p>
@@ -2281,7 +2301,7 @@ function CategoryAssignSheet({
   };
   const isDirty = [...selectedIds].sort((a, b) => a - b).join(",") !== [...initialIds].sort((a, b) => a - b).join(",");
   return (
-    <div className="sheet-overlay fixed inset-0 z-50 flex items-center justify-center p-4" style={{ background: "rgba(10,6,20,0.55)" }} role="dialog" aria-modal="true" aria-label={T.categoryAssign.sheetAria(character.display_name)}>
+    <div className="sheet-overlay" role="dialog" aria-modal="true" aria-label={T.categoryAssign.sheetAria(character.display_name)}>
       <div className="max-h-full w-full max-w-md overflow-y-auto rounded-3xl p-5" style={{ background: "var(--surface)" }}>
         <div className="flex items-center gap-3">
           <Avatar imageUrl={character.image_url} name={character.display_name} themeColor={character.theme_color} size={40} />
@@ -2521,11 +2541,11 @@ function DiffValuePair({ before, after }: { before: string; after: string }) {
       <p className="mt-1 text-xs font-bold" style={{ color: "var(--dim)" }}>{T.reviewHistory.diffChangedPart}</p>
       <p className="mt-0.5 text-xs whitespace-pre-wrap break-words" style={{ color: "var(--dim)" }}>
         <span className="font-bold">{T.reviewHistory.diffBefore}</span>
-        {renderSpan(spans.before, "color-mix(in srgb, var(--danger) 22%, transparent)", "（なし）")}
+        {renderSpan(spans.before, "color-mix(in srgb, var(--danger) 22%, transparent)", T.reviewHistory.diffEmpty)}
       </p>
       <p className="mt-0.5 text-xs whitespace-pre-wrap break-words" style={{ color: "var(--text)" }}>
         <span className="font-bold">{T.reviewHistory.diffAfter}</span>
-        {renderSpan(spans.after, "var(--accent-soft)", "（削除）")}
+        {renderSpan(spans.after, "var(--accent-soft)", T.reviewHistory.diffDeleted)}
       </p>
       <details className="mt-1.5">
         <summary className="cursor-pointer text-xs font-bold" style={{ color: "var(--dim)" }}>{T.reviewHistory.diffFullSummary}</summary>
@@ -2535,6 +2555,105 @@ function DiffValuePair({ before, after }: { before: string; after: string }) {
         <p className="mt-1 max-h-40 overflow-y-auto text-xs whitespace-pre-wrap break-words" style={{ color: "var(--text)" }}>
           <span className="font-bold">{T.reviewHistory.diffAfter}</span>{after}
         </p>
+      </details>
+    </>
+  );
+}
+
+/** 差分1件の変更前・変更後の型（レビュー結果の各表示で共用）。 */
+type ReviewDiffEntry = { path: string; before: string; after: string };
+
+/** レビューの状態バッジ（結果シート・レビュー履歴で共通の色付け:
+ * 失敗は赤、完了（変更あり）は金、それ以外は淡色）。 */
+function ReviewStatusBadge({ status, labels }: { status: string; labels: Record<string, string> }) {
+  return (
+    <span
+      className="rounded-full px-2 py-0.5 text-xs font-bold"
+      style={{
+        background: "var(--surface)",
+        color: status === "failed" ? "var(--danger)" : status === "done" ? "var(--gold)" : "var(--dim)",
+      }}
+    >
+      {labels[status] ?? status}
+    </span>
+  );
+}
+
+/** レビューの結果ブロック（失敗の理由・変更なしの注記・改訂の意図）。
+ * 自動レビューの結果シートとレビュー履歴で同じ文言・見た目を使う。 */
+function ReviewOutcome({
+  status,
+  failReason,
+  failDetail,
+  intent,
+}: {
+  status: string;
+  failReason: string;
+  failDetail: string;
+  intent: string;
+}) {
+  return (
+    <>
+      {status === "failed" && (
+        <>
+          <p className="mt-2 text-sm" style={{ color: "var(--danger)" }}>{reviewFailLabel(failReason)}{T.reviewHistory.failedNoteSuffix}</p>
+          {failDetail ? (
+            <p className="mt-1 text-xs whitespace-pre-wrap break-words" style={{ color: "var(--dim)" }}>{T.reviewHistory.failDetailLabel(failDetail)}</p>
+          ) : null}
+        </>
+      )}
+      {status === "no_change" && (
+        <p className="mt-2 text-sm" style={{ color: "var(--dim)" }}>{T.reviewHistory.noChangeNote}</p>
+      )}
+      {intent.trim() && (
+        <>
+          <p className="mt-3 text-xs font-bold" style={{ color: "var(--dim)" }}>{T.reviewHistory.intentHeading}</p>
+          <p className="mt-0.5 text-sm whitespace-pre-wrap" style={{ color: "var(--text)" }}>{intent}</p>
+        </>
+      )}
+    </>
+  );
+}
+
+/** 設定の差分一覧（見出し＋各差分のパスと変更前後）。差分が無ければ何も出さない。 */
+function DiffList({ diff }: { diff: ReviewDiffEntry[] }) {
+  if (diff.length === 0) return null;
+  return (
+    <>
+      <p className="mt-3 text-xs font-bold" style={{ color: "var(--dim)" }}>{T.reviewHistory.diffHeading(diff.length)}</p>
+      <div className="mt-1 flex flex-col gap-2">
+        {diff.map((d, i) => (
+          <div key={i} className="rounded-xl p-2.5" style={{ background: "var(--surface)" }}>
+            <p className="text-xs font-bold break-all" style={{ color: "var(--gold)" }}>{d.path}</p>
+            <DiffValuePair before={d.before} after={d.after} />
+          </div>
+        ))}
+      </div>
+    </>
+  );
+}
+
+/** 改訂前・改訂後の設定JSON全文の開閉表示。変更後の details の末尾には
+ * children（JSONコピーボタンなど）を差し込める。 */
+function RevisionJsonDetails({
+  beforeJson,
+  afterJson,
+  children,
+}: {
+  beforeJson: string;
+  afterJson: string;
+  children?: ReactNode;
+}) {
+  return (
+    <>
+      <details className="mt-3">
+        <summary className="cursor-pointer text-xs font-bold" style={{ color: "var(--dim)" }}>{T.reviewHistory.beforeJsonSummary}</summary>
+        <pre className="mt-2 max-h-64 overflow-auto rounded-xl p-3 text-xs whitespace-pre-wrap break-all" style={{ background: "var(--surface)", color: "var(--text)" }}>{beforeJson}</pre>
+      </details>
+      <details className="mt-3">
+        <summary className="cursor-pointer text-xs font-bold" style={{ color: "var(--dim)" }}>{T.reviewHistory.fullJsonSummary}</summary>
+        <pre className="mt-2 max-h-64 overflow-auto rounded-xl p-3 text-xs whitespace-pre-wrap break-all" style={{ background: "var(--surface)", color: "var(--text)" }}>{afterJson}</pre>
+        {children}
       </details>
     </>
   );
@@ -2574,14 +2693,9 @@ function ReviewHistorySheet({ characterId, characterName, onClose }: { character
 
   const reviews: ReviewHistoryData["reviews"] = history.data?.reviews ?? [];
   return (
-    <div className="sheet-overlay fixed inset-0 z-50 flex items-center justify-center p-4" style={{ background: "rgba(10,6,20,0.55)" }} role="dialog" aria-modal="true" aria-label={T.reviewHistory.title(characterName)}>
+    <div className="sheet-overlay" role="dialog" aria-modal="true" aria-label={T.reviewHistory.title(characterName)}>
       <div className="max-h-full w-full max-w-md overflow-y-auto rounded-3xl p-5" style={{ background: "var(--surface)" }}>
-        <div className="flex items-start justify-between gap-2">
-          <h2 className="font-display text-lg font-bold" style={{ color: "var(--text)" }}>{T.reviewHistory.title(characterName)}</h2>
-          <button type="button" onClick={onClose} aria-label={T.reviewHistory.closeAria} className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full" style={{ background: "var(--surface-alt)", color: "var(--dim)" }}>
-            ×
-          </button>
-        </div>
+        <SheetHeader title={T.reviewHistory.title(characterName)} closeAria={T.reviewHistory.closeAria} onClose={onClose} size="sm" />
         <p className="mt-1 text-xs leading-relaxed" style={{ color: "var(--dim)" }}>
           {T.reviewHistory.description}
         </p>
@@ -2595,15 +2709,7 @@ function ReviewHistorySheet({ characterId, characterName, onClose }: { character
           {reviews.map((r) => (
             <article key={r.id} className="rounded-2xl p-3" style={{ background: "var(--surface-alt)" }} aria-label={T.reviewHistory.articleAria(formatDateTime(r.created_at))}>
               <div className="flex items-center gap-2">
-                <span
-                  className="rounded-full px-2 py-0.5 text-xs font-bold"
-                  style={{
-                    background: "var(--surface)",
-                    color: r.status === "failed" ? "var(--danger)" : r.status === "done" ? "var(--gold)" : "var(--dim)",
-                  }}
-                >
-                  {T.review.statusLabels[r.status] ?? r.status}
-                </span>
+                <ReviewStatusBadge status={r.status} labels={T.review.statusLabels} />
                 <span className="text-xs" style={{ color: "var(--dim)" }}>{formatDateTime(r.created_at)}・{r.target_kind === "group" ? T.reviewHistory.groupMessage : r.target_kind === "settings" ? T.reviewHistory.settingsMessage : T.reviewHistory.chatMessage}</span>
                 {r.review_kind === "auto" && (
                   <span className="rounded-full px-2 py-0.5 text-xs font-bold" style={{ background: "var(--surface)", color: "var(--gold)" }}>{T.reviewHistory.autoBadge}</span>
@@ -2616,41 +2722,11 @@ function ReviewHistorySheet({ characterId, characterName, onClose }: { character
               <p className="mt-0.5 line-clamp-4 text-sm whitespace-pre-wrap" style={{ color: "var(--text)" }}>{r.review_kind === "auto" ? r.batch_text : r.target_kind === "settings" ? T.reviewHistory.settingsTargetBody : r.message_body}</p>
               <p className="mt-2 text-xs font-bold" style={{ color: "var(--dim)" }}>{r.review_kind === "auto" ? T.reviewHistory.autoFeedbackHeading : T.reviewHistory.feedbackHeading}</p>
               <p className="mt-0.5 text-sm whitespace-pre-wrap" style={{ color: "var(--text)" }}>{r.feedback}</p>
-              {r.status === "failed" && (
-                <>
-                  <p className="mt-2 text-sm" style={{ color: "var(--danger)" }}>{reviewFailLabel(r.fail_reason)}{T.reviewHistory.failedNoteSuffix}</p>
-                  {r.fail_detail ? (
-                    <p className="mt-1 text-xs whitespace-pre-wrap break-words" style={{ color: "var(--dim)" }}>{T.reviewHistory.failDetailLabel(r.fail_detail)}</p>
-                  ) : null}
-                </>
-              )}
-              {r.status === "no_change" && (
-                <p className="mt-2 text-sm" style={{ color: "var(--dim)" }}>{T.reviewHistory.noChangeNote}</p>
-              )}
-              {r.intent.trim() && (
-                <>
-                  <p className="mt-3 text-xs font-bold" style={{ color: "var(--dim)" }}>{T.reviewHistory.intentHeading}</p>
-                  <p className="mt-0.5 text-sm whitespace-pre-wrap" style={{ color: "var(--text)" }}>{r.intent}</p>
-                </>
-              )}
+              <ReviewOutcome status={r.status} failReason={r.fail_reason} failDetail={r.fail_detail} intent={r.intent} />
               {r.revision && (
                 <>
-                  <p className="mt-3 text-xs font-bold" style={{ color: "var(--dim)" }}>{T.reviewHistory.diffHeading(r.revision.diff.length)}</p>
-                  <div className="mt-1 flex flex-col gap-2">
-                    {r.revision.diff.map((d, i) => (
-                      <div key={i} className="rounded-xl p-2.5" style={{ background: "var(--surface)" }}>
-                        <p className="text-xs font-bold break-all" style={{ color: "var(--gold)" }}>{d.path}</p>
-                        <DiffValuePair before={d.before} after={d.after} />
-                      </div>
-                    ))}
-                  </div>
-                  <details className="mt-3">
-                    <summary className="cursor-pointer text-xs font-bold" style={{ color: "var(--dim)" }}>{T.reviewHistory.beforeJsonSummary}</summary>
-                    <pre className="mt-2 max-h-64 overflow-auto rounded-xl p-3 text-xs whitespace-pre-wrap break-all" style={{ background: "var(--surface)", color: "var(--text)" }}>{r.revision.before_json}</pre>
-                  </details>
-                  <details className="mt-3">
-                    <summary className="cursor-pointer text-xs font-bold" style={{ color: "var(--dim)" }}>{T.reviewHistory.fullJsonSummary}</summary>
-                    <pre className="mt-2 max-h-64 overflow-auto rounded-xl p-3 text-xs whitespace-pre-wrap break-all" style={{ background: "var(--surface)", color: "var(--text)" }}>{r.revision.after_json}</pre>
+                  <DiffList diff={r.revision.diff} />
+                  <RevisionJsonDetails beforeJson={r.revision.before_json} afterJson={r.revision.after_json}>
                     <button
                       type="button"
                       onClick={() => copyJson(r.id, r.revision!.after_json)}
@@ -2659,7 +2735,7 @@ function ReviewHistorySheet({ characterId, characterName, onClose }: { character
                     >
                       {copiedId === r.id ? T.reviewHistory.copied : T.reviewHistory.copyJson}
                     </button>
-                  </details>
+                  </RevisionJsonDetails>
                   {!r.revision.reverted_at && (
                     confirmRevertId === r.revision.id ? (
                       <div className="mt-3 rounded-xl p-3" style={{ background: "var(--surface)" }}>
@@ -2729,11 +2805,6 @@ let sessionGroupPage = 0;
 // 画面遷移で失われないようセッション内に保持する。
 let sessionHomeTab: "personal" | "group" = "personal";
 
-/** キャラが属するカテゴリID一覧（正はサーバが返す category_ids のみ。旧カラム由来のフォールバックは撤去済み）。 */
-function charCategoryIds(c: CharacterItem): number[] {
-  return c.category_ids;
-}
-
 /** 選択中の並び替えでキャラ配列を並べ替える（一覧とグループ作成で共用）。 */
 function sortCharactersBy(list: CharacterItem[], sort: CharSort): CharacterItem[] {
   return [...list].sort((a, b) => {
@@ -2768,30 +2839,13 @@ function GroupListMenuSheet({
   onDelete: () => void;
 }) {
   return (
-    <div className="sheet-overlay fixed inset-0 z-50 flex items-center justify-center p-4" style={{ background: "rgba(10,6,20,0.55)" }} role="dialog" aria-modal="true" aria-label={T.home.groupMenuAria(group.name)}>
-      <div className="max-h-full w-full max-w-md overflow-y-auto rounded-3xl p-5" style={{ background: "var(--surface)" }}>
-        <h2 className="font-display min-w-0 truncate text-lg font-bold" style={{ color: "var(--text)" }}>{T.home.groupMenuTitle(group.name)}</h2>
-        <div className="mt-4 flex flex-col gap-2">
-          <button
-            type="button"
-            onClick={onDelete}
-            className="w-full rounded-2xl px-4 py-3 text-left"
-            style={{ background: "var(--surface-alt)", color: "var(--text)" }}
-          >
-            <span className="block font-bold" style={{ color: "var(--danger)" }}>{T.home.groupDelete}</span>
-            <span className="mt-0.5 block text-xs" style={{ color: "var(--dim)" }}>{T.home.groupDeleteDesc}</span>
-          </button>
-        </div>
-        <button
-          type="button"
-          onClick={onClose}
-          className="mt-4 w-full rounded-full px-4 py-2.5 font-bold"
-          style={{ background: "var(--surface)", color: "var(--text)", border: "1px solid var(--border)" }}
-        >
-          {T.common.close}
-        </button>
-      </div>
-    </div>
+    <MenuSheet
+      title={T.home.groupMenuTitle(group.name)}
+      ariaLabel={T.home.groupMenuAria(group.name)}
+      titleTruncate
+      items={[{ label: T.home.groupDelete, description: T.home.groupDeleteDesc, onSelect: onDelete, danger: true }]}
+      onClose={onClose}
+    />
   );
 }
 
@@ -2889,32 +2943,47 @@ function OtherMenuSheet({ onClose, onExportCharacters, onCategoryManage }: { onC
     { label: T.categoryManage.title, description: T.home.categoryManageDesc, onSelect: onCategoryManage },
   ];
   return (
-    <div className="sheet-overlay fixed inset-0 z-50 flex items-center justify-center p-4" style={{ background: "rgba(10,6,20,0.55)" }} role="dialog" aria-modal="true" aria-label={T.home.otherMenuAria}>
-      <div className="max-h-full w-full max-w-md overflow-y-auto rounded-3xl p-5" style={{ background: "var(--surface)" }}>
-        <h2 className="font-display text-lg font-bold" style={{ color: "var(--text)" }}>{T.home.otherMenuTitle}</h2>
-        <div className="mt-4 flex flex-col gap-2">
-          {items.map((item) => (
-            <button
-              key={item.label}
-              type="button"
-              onClick={item.onSelect}
-              className="w-full rounded-2xl px-4 py-3 text-left"
-              style={{ background: "var(--surface-alt)", color: "var(--text)" }}
-            >
-              <span className="block font-bold">{item.label}</span>
-              <span className="mt-0.5 block text-xs" style={{ color: "var(--dim)" }}>{item.description}</span>
-            </button>
-          ))}
-        </div>
-        <button
-          type="button"
-          onClick={onClose}
-          className="mt-4 w-full rounded-full px-4 py-2.5 font-bold"
-          style={{ background: "var(--surface)", color: "var(--text)", border: "1px solid var(--border)" }}
-        >
-          {T.common.close}
-        </button>
-      </div>
+    <MenuSheet title={T.home.otherMenuTitle} ariaLabel={T.home.otherMenuAria} items={items} onClose={onClose} />
+  );
+}
+
+/** キャラ選択のチェックボックス一覧（キャラ情報の出力・グループ作成・
+ * 参加者変更で共用）。badge はキャラごとの追加表示（画像なしの注記や
+ * 参加中バッジなど）を差し込むためのもの。 */
+function CharacterCheckList({
+  characters,
+  selected,
+  onToggle,
+  ariaLabel,
+  badge,
+  showEmpty = true,
+}: {
+  characters: CharacterItem[];
+  selected: number[];
+  onToggle: (id: number) => void;
+  ariaLabel: (c: CharacterItem) => string;
+  badge?: (c: CharacterItem) => ReactNode;
+  showEmpty?: boolean;
+}) {
+  return (
+    <div className="mt-2 flex flex-col gap-1">
+      {characters.map((c) => (
+        <label key={c.id} className="flex min-h-11 cursor-pointer items-center gap-3 rounded-2xl px-2 py-1.5" style={{ background: selected.includes(c.id) ? "var(--accent-soft)" : "transparent" }}>
+          <input
+            type="checkbox"
+            checked={selected.includes(c.id)}
+            onChange={() => onToggle(c.id)}
+            aria-label={ariaLabel(c)}
+            className="h-5 w-5 shrink-0"
+          />
+          <Avatar imageUrl={c.image_url} name={c.display_name} themeColor={c.theme_color} size={36} />
+          <span className="font-bold" style={{ color: "var(--text)" }}>{c.display_name}</span>
+          {badge?.(c)}
+        </label>
+      ))}
+      {characters.length === 0 && showEmpty && (
+        <p className="px-2 py-3 text-sm" style={{ color: "var(--dim)" }}>{T.common.categoryEmpty}</p>
+      )}
     </div>
   );
 }
@@ -2977,20 +3046,9 @@ function CharacterExportSheet({ characters, categories, sort, onClose }: { chara
     onError: (e) => setError(errMsg(e, T.characterExport.failed)),
   });
   return (
-    <div className="sheet-overlay fixed inset-0 z-50 flex items-center justify-center p-4" style={{ background: "rgba(10,6,20,0.55)" }} role="dialog" aria-modal="true" aria-label={T.characterExport.title}>
+    <div className="sheet-overlay" role="dialog" aria-modal="true" aria-label={T.characterExport.title}>
       <div className="max-h-full w-full max-w-md overflow-y-auto rounded-3xl p-5" style={{ background: "var(--surface)" }}>
-        <div className="flex items-start justify-between gap-3">
-          <h2 className="font-display text-lg font-bold" style={{ color: "var(--text)" }}>{T.characterExport.title}</h2>
-          <button
-            type="button"
-            onClick={onClose}
-            aria-label={T.common.close}
-            className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-base"
-            style={{ background: "var(--surface-alt)", color: "var(--dim)" }}
-          >
-            ×
-          </button>
-        </div>
+        <SheetHeader title={T.characterExport.title} closeAria={T.common.close} onClose={onClose} />
         <p className="mt-2 text-sm leading-relaxed" style={{ color: "var(--dim)" }}>
           {T.characterExport.description}
         </p>
@@ -3018,27 +3076,13 @@ function CharacterExportSheet({ characters, categories, sort, onClose }: { chara
             <CategoryFilterSelect id="char-export-category-filter" categories={categories} value={catFilter} onChange={setCatFilter} />
           </div>
         )}
-        <div className="mt-2 flex flex-col gap-1">
-          {visibleCharacters.map((c) => (
-            <label key={c.id} className="flex min-h-11 cursor-pointer items-center gap-3 rounded-2xl px-2 py-1.5" style={{ background: selected.includes(c.id) ? "var(--accent-soft)" : "transparent" }}>
-              <input
-                type="checkbox"
-                checked={selected.includes(c.id)}
-                onChange={() => toggle(c.id)}
-                aria-label={T.characterExport.selectAria(c.display_name)}
-                className="h-5 w-5 shrink-0"
-              />
-              <Avatar imageUrl={c.image_url} name={c.display_name} themeColor={c.theme_color} size={36} />
-              <span className="font-bold" style={{ color: "var(--text)" }}>{c.display_name}</span>
-              {!c.image_url && (
-                <span className="text-xs" style={{ color: "var(--dim)" }}>{T.characterExport.noImageNote}</span>
-              )}
-            </label>
-          ))}
-          {visibleCharacters.length === 0 && (
-            <p className="px-2 py-3 text-sm" style={{ color: "var(--dim)" }}>{T.common.categoryEmpty}</p>
-          )}
-        </div>
+        <CharacterCheckList
+          characters={visibleCharacters}
+          selected={selected}
+          onToggle={toggle}
+          ariaLabel={(c) => T.characterExport.selectAria(c.display_name)}
+          badge={(c) => (!c.image_url ? <span className="text-xs" style={{ color: "var(--dim)" }}>{T.characterExport.noImageNote}</span> : null)}
+        />
         <label className="mt-3 flex cursor-pointer items-start gap-2.5 rounded-2xl px-3 py-2.5" style={{ background: "var(--surface-alt)" }}>
           <input
             type="checkbox"
@@ -3122,14 +3166,13 @@ function HomeView({ go }: { go: (v: View) => void }) {
   // モデル claude_model も同じ全体設定に含まれる。全項目をまとめて送る。
   const globalSettings = useQuery({ queryKey: ["global-settings"], queryFn: () => api.getGlobalSettings({}) });
   const saveGlobalSettings = useMutation({
-    mutationFn: async (v: { notify_reply: boolean; reply_engine: "claude" | "muse"; claude_model: "sonnet" | "opus" | "haiku" | "auto" }) =>
-      await api.saveGlobalSettings(v),
+    mutationFn: async (v: GlobalSettings) => await api.saveGlobalSettings(v),
     onSettled: () => queryClient.invalidateQueries({ queryKey: ["global-settings"] }),
   });
   const settingsNotify = globalSettings.data?.notify_reply ?? false;
   const settingsEngine = globalSettings.data?.reply_engine ?? "muse";
   const settingsModel = globalSettings.data?.claude_model ?? "sonnet";
-  const saveSettings = (patch: Partial<{ notify_reply: boolean; reply_engine: "claude" | "muse"; claude_model: "sonnet" | "opus" | "haiku" | "auto" }>) =>
+  const saveSettings = (patch: Partial<GlobalSettings>) =>
     saveGlobalSettings.mutate({ notify_reply: settingsNotify, reply_engine: settingsEngine, claude_model: settingsModel, ...patch });
 
   // 並び替え・簡易表示の選択はサーバ側（meta）に保存し、次回開いた時に復元する
@@ -3282,10 +3325,10 @@ function HomeView({ go }: { go: (v: View) => void }) {
   // 作成せず、理由と現在の人数を表示する（サーバ側でも同じ文言で弾く）。
   // 3人以上ならサーバ側の共通経路で即作成する（抽選はサーバ側）。
   const handleAutoCreateGroup = () => {
-    if (characters.length < 3) {
-      setAutoCreateError(T.home.randomCreateNeedChars(characters.length));
-      return;
-    }
+    // 3人未満の時は作成しない。理由と現在の人数は下の注記が常時表示する
+    // ため、ここでエラー状態には入れない（入れると表示側の条件で隠れたまま
+    // 残り、3人以上になった後に古いエラーが突然表示されてしまう）。
+    if (characters.length < 3) return;
     setAutoCreateError("");
     autoCreateGroup.mutate();
   };
@@ -3304,31 +3347,12 @@ function HomeView({ go }: { go: (v: View) => void }) {
       >
         <span className="relative shrink-0">
           <Avatar imageUrl={c.image_url} name={c.display_name} themeColor={c.theme_color} size={40} />
-          {c.unread_count > 0 && (
-            <span
-              className="absolute -top-1 -right-1 flex h-5 min-w-5 items-center justify-center rounded-full px-1 text-[11px] font-black text-white"
-              style={{ background: "var(--danger)" }}
-            >
-              {c.unread_count}
-            </span>
-          )}
+          <UnreadBadge count={c.unread_count} size="sm" />
         </span>
         <span className="font-display min-w-0 flex-1 truncate text-base font-bold" style={{ color: "var(--text)" }}>{c.display_name}</span>
-        {showChip && charCategoryIds(c).length > 0 && (
-          <span className="flex shrink-0 flex-wrap justify-end gap-1">
-            {charCategoryIds(c).map((cid) => categoryNameById.get(cid) ? (
-              <span key={cid} className="rounded-full px-2 py-0.5 text-xs font-bold" style={{ background: "var(--surface-alt)", color: "var(--dim)" }}>
-                {categoryNameById.get(cid)}
-              </span>
-            ) : null)}
-          </span>
-        )}
+        {showChip && <CategoryChips ids={c.category_ids} nameById={categoryNameById} align="end" />}
         <StatusBadge status={c.request_status} reviewing={c.reviewing} />
-        {c.unreplied_count > 0 && c.request_status === "none" && (
-          <span className="shrink-0 rounded-full px-2 py-0.5 text-xs font-bold" style={{ background: "var(--accent-soft)", color: "var(--gold)" }}>
-            {T.status.unreplied(c.unreplied_count)}
-          </span>
-        )}
+        <UnrepliedBadge count={c.unreplied_count} status={c.request_status} />
       </button>
       <button
         type="button"
@@ -3355,32 +3379,13 @@ function HomeView({ go }: { go: (v: View) => void }) {
       >
         <span className="relative">
           <Avatar imageUrl={c.image_url} name={c.display_name} themeColor={c.theme_color} size={72} />
-          {c.unread_count > 0 && (
-            <span
-              className="absolute -top-1 -right-1 flex h-6 min-w-6 items-center justify-center rounded-full px-1 text-xs font-black text-white"
-              style={{ background: "var(--danger)" }}
-            >
-              {c.unread_count}
-            </span>
-          )}
+          <UnreadBadge count={c.unread_count} size="lg" />
         </span>
         <span className="font-display w-full truncate text-base font-bold" style={{ color: "var(--text)" }}>{c.display_name}</span>
-        {showChip && charCategoryIds(c).length > 0 && (
-          <span className="flex flex-wrap justify-center gap-1">
-            {charCategoryIds(c).map((cid) => categoryNameById.get(cid) ? (
-              <span key={cid} className="rounded-full px-2 py-0.5 text-xs font-bold" style={{ background: "var(--surface-alt)", color: "var(--dim)" }}>
-                {categoryNameById.get(cid)}
-              </span>
-            ) : null)}
-          </span>
-        )}
+        {showChip && <CategoryChips ids={c.category_ids} nameById={categoryNameById} align="center" />}
         <span className="flex items-center gap-1">
           <StatusBadge status={c.request_status} reviewing={c.reviewing} />
-          {c.unreplied_count > 0 && c.request_status === "none" && (
-            <span className="rounded-full px-2 py-0.5 text-xs font-bold" style={{ background: "var(--accent-soft)", color: "var(--gold)" }}>
-              {T.status.unreplied(c.unreplied_count)}
-            </span>
-          )}
+          <UnrepliedBadge count={c.unreplied_count} status={c.request_status} />
         </span>
       </button>
       <button
@@ -3605,14 +3610,13 @@ function HomeView({ go }: { go: (v: View) => void }) {
               <span className="mt-0.5 block text-xs leading-relaxed" style={{ color: "var(--dim)" }}>{T.home.randomCreateByScheduleDesc}</span>
             </button>
           </div>
-          {characters.length < 3 && (
+          {characters.length < 3 ? (
             <p className="mt-2 text-sm leading-relaxed" role="status" style={{ color: "var(--danger)" }}>
               {T.home.randomCreateNeedChars(characters.length)}
             </p>
-          )}
-          {autoCreateError && characters.length >= 3 && (
+          ) : autoCreateError ? (
             <p className="mt-2 text-sm" role="alert" style={{ color: "var(--danger)" }}>{autoCreateError}</p>
-          )}
+          ) : null}
         </div>
         {groups.length === 0 ? (
           <p className="mt-3 text-sm" style={{ color: "var(--dim)" }}>
@@ -3777,9 +3781,9 @@ function HomeView({ go }: { go: (v: View) => void }) {
                   className="rounded-full px-3 py-1.5 text-sm font-bold"
                   style={{ background: "var(--surface)", color: "var(--text)", border: "1px solid var(--border)" }}
                 >
-                  <option value="sonnet">Sonnet</option>
-                  <option value="opus">Opus</option>
-                  <option value="haiku">Haiku</option>
+                  <option value="sonnet">{T.home.claudeModelSonnet}</option>
+                  <option value="opus">{T.home.claudeModelOpus}</option>
+                  <option value="haiku">{T.home.claudeModelHaiku}</option>
                   <option value="auto">{T.home.claudeModelAuto}</option>
                 </select>
               </>
@@ -4165,20 +4169,9 @@ function ScheduleEditSheet({
     setCategoryIds((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));
 
   return (
-    <div className="sheet-overlay fixed inset-0 z-50 flex items-center justify-center p-4" style={{ background: "rgba(10,6,20,0.55)" }} role="dialog" aria-modal="true" aria-label={initial ? T.scheduleEdit.titleEdit : T.scheduleEdit.titleCreate}>
+    <div className="sheet-overlay" role="dialog" aria-modal="true" aria-label={initial ? T.scheduleEdit.titleEdit : T.scheduleEdit.titleCreate}>
       <div className="max-h-full w-full max-w-md overflow-y-auto rounded-3xl p-5" style={{ background: "var(--surface)" }}>
-        <div className="flex items-start justify-between gap-3">
-          <h2 className="font-display text-lg font-bold" style={{ color: "var(--text)" }}>{initial ? T.scheduleEdit.titleEdit : T.scheduleEdit.titleCreate}</h2>
-          <button
-            type="button"
-            onClick={onClose}
-            aria-label={T.common.close}
-            className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-base"
-            style={{ background: "var(--surface-alt)", color: "var(--dim)" }}
-          >
-            ×
-          </button>
-        </div>
+        <SheetHeader title={initial ? T.scheduleEdit.titleEdit : T.scheduleEdit.titleCreate} closeAria={T.common.close} onClose={onClose} />
 
         <label className="mt-4 block text-sm font-bold" style={{ color: "var(--text)" }} htmlFor="schedule-name">
           {T.scheduleEdit.nameLabel}
@@ -4483,26 +4476,7 @@ function LogBody({ id }: { id: number }) {
   // 生成ログは、AIへ送ったリクエストとAIから貰ったレスポンスを別々に表示する。
   const split = q.data?.kind === "generation" && body ? splitGenerationLogBody(body) : null;
   if (split) {
-    return (
-      <div className="mt-2 flex flex-col gap-3">
-        {split.request && (
-          <div>
-            <p className="text-xs font-bold" style={{ color: "var(--dim)" }}>{T.logs.requestHeading}</p>
-            <pre className="mt-1 max-h-80 overflow-auto rounded-xl p-3 text-xs leading-relaxed whitespace-pre-wrap break-words" style={{ background: "var(--surface)", color: "var(--text)" }}>
-              {split.request}
-            </pre>
-          </div>
-        )}
-        {split.response && (
-          <div>
-            <p className="text-xs font-bold" style={{ color: "var(--dim)" }}>{T.logs.responseHeading}</p>
-            <pre className="mt-1 max-h-80 overflow-auto rounded-xl p-3 text-xs leading-relaxed whitespace-pre-wrap break-words" style={{ background: "var(--surface)", color: "var(--text)" }}>
-              {split.response}
-            </pre>
-          </div>
-        )}
-      </div>
-    );
+    return <ReviewPromptResponse prompt={split.request} response={split.response} wrapperClassName="mt-2" />;
   }
   const revision = q.data?.review_revision ?? null;
   // レビュー結果のログで生記録（自動レビュー分）が残っている場合は、
@@ -4515,28 +4489,13 @@ function LogBody({ id }: { id: number }) {
       </pre>
       {record && <ReviewPromptResponse prompt={record.prompt_text} response={record.response_text} />}
       {revision && (
-        <div className="mt-3">
-          <p className="text-xs font-bold" style={{ color: "var(--dim)" }}>{T.reviewHistory.diffHeading(revision.diff.length)}</p>
-          <div className="mt-1 flex flex-col gap-2">
-            {revision.diff.map((d, i) => (
-              <div key={i} className="rounded-xl p-2.5" style={{ background: "var(--surface)" }}>
-                <p className="text-xs font-bold break-all" style={{ color: "var(--gold)" }}>{d.path}</p>
-                <DiffValuePair before={d.before} after={d.after} />
-              </div>
-            ))}
-          </div>
-          <details className="mt-3">
-            <summary className="cursor-pointer text-xs font-bold" style={{ color: "var(--dim)" }}>{T.reviewHistory.beforeJsonSummary}</summary>
-            <pre className="mt-2 max-h-64 overflow-auto rounded-xl p-3 text-xs whitespace-pre-wrap break-all" style={{ background: "var(--surface)", color: "var(--text)" }}>{revision.before_json}</pre>
-          </details>
-          <details className="mt-3">
-            <summary className="cursor-pointer text-xs font-bold" style={{ color: "var(--dim)" }}>{T.reviewHistory.fullJsonSummary}</summary>
-            <pre className="mt-2 max-h-64 overflow-auto rounded-xl p-3 text-xs whitespace-pre-wrap break-all" style={{ background: "var(--surface)", color: "var(--text)" }}>{revision.after_json}</pre>
-          </details>
+        <>
+          <DiffList diff={revision.diff} />
+          <RevisionJsonDetails beforeJson={revision.before_json} afterJson={revision.after_json} />
           {revision.reverted_at && (
             <p className="mt-2 text-xs" style={{ color: "var(--dim)" }}>{T.reviewHistory.revertedNote(formatDateTime(revision.reverted_at))}</p>
           )}
-        </div>
+        </>
       )}
     </>
   );
@@ -4726,7 +4685,7 @@ function ImportSheet({ onClose, onCreateNew }: { onClose: () => void; onCreateNe
   };
   const { importKick, importStatus, now: sheetNow } = useImportStatus();
   return (
-    <div className="sheet-overlay fixed inset-0 z-50 flex items-center justify-center p-4" style={{ background: "rgba(10,6,20,0.55)" }} role="dialog" aria-modal="true" aria-label={T.importSheet.title}>
+    <div className="sheet-overlay" role="dialog" aria-modal="true" aria-label={T.importSheet.title}>
       <div className="max-h-full w-full max-w-md overflow-y-auto rounded-3xl p-5" style={{ background: "var(--surface)" }}>
         <h2 className="font-display text-lg font-bold" style={{ color: "var(--text)" }}>{T.importSheet.title}</h2>
         <p className="mt-2 text-sm leading-relaxed" style={{ color: "var(--dim)" }}>
@@ -4864,7 +4823,7 @@ function CreateGroupSheet({ characters, categories, onClose, go }: { characters:
     });
   };
   return (
-    <div className="sheet-overlay fixed inset-0 z-50 flex items-center justify-center p-4" style={{ background: "rgba(10,6,20,0.55)" }} role="dialog" aria-modal="true" aria-label={T.createGroup.title}>
+    <div className="sheet-overlay" role="dialog" aria-modal="true" aria-label={T.createGroup.title}>
       <div className="max-h-full w-full max-w-md overflow-y-auto rounded-3xl p-5" style={{ background: "var(--surface)" }}>
         <h2 className="font-display text-lg font-bold" style={{ color: "var(--text)" }}>{T.createGroup.title}</h2>
         <label className="mt-4 block text-sm font-bold" style={{ color: "var(--text)" }} htmlFor="group-name">{T.createGroup.nameLabel}</label>
@@ -4898,24 +4857,12 @@ function CreateGroupSheet({ characters, categories, onClose, go }: { characters:
             <span className="text-xs" style={{ color: "var(--dim)" }}>{T.common.selectedCount(selected.length)}</span>
           </div>
         )}
-        <div className="mt-2 flex flex-col gap-1">
-          {visibleCharacters.map((c) => (
-            <label key={c.id} className="flex min-h-11 cursor-pointer items-center gap-3 rounded-2xl px-2 py-1.5" style={{ background: selected.includes(c.id) ? "var(--accent-soft)" : "transparent" }}>
-              <input
-                type="checkbox"
-                checked={selected.includes(c.id)}
-                onChange={() => toggle(c.id)}
-                aria-label={T.createGroup.joinAria(c.display_name)}
-                className="h-5 w-5 shrink-0"
-              />
-              <Avatar imageUrl={c.image_url} name={c.display_name} themeColor={c.theme_color} size={36} />
-              <span className="font-bold" style={{ color: "var(--text)" }}>{c.display_name}</span>
-            </label>
-          ))}
-          {visibleCharacters.length === 0 && (
-            <p className="px-2 py-3 text-sm" style={{ color: "var(--dim)" }}>{T.common.categoryEmpty}</p>
-          )}
-        </div>
+        <CharacterCheckList
+          characters={visibleCharacters}
+          selected={selected}
+          onToggle={toggle}
+          ariaLabel={(c) => T.createGroup.joinAria(c.display_name)}
+        />
         <p className="mt-4 text-sm font-bold" style={{ color: "var(--text)" }}>{T.createGroup.guestMobNarrationHeading}</p>
         <p className="mt-1 text-xs leading-relaxed" style={{ color: "var(--dim)" }}>{T.createGroup.guestMobNarrationNote}</p>
         <GuestMobToggles
@@ -4949,6 +4896,35 @@ function CreateGroupSheet({ characters, categories, onClose, go }: { characters:
 }
 
 // ------------------------------------------------------------------ chat
+
+type AutoReviewBatches = {
+  map: Map<number, AutoReviewItem[]>;
+  batchEndIds: Set<number>;
+};
+
+/** 自動レビューの結果表示用に、生成バッチ（request_id）ごとのレビュー一覧と、
+ * バッチの最後の発言IDの集合を作る（1対1・グループで共用）。
+ * バッチの最後の発言の後ろに「レビュー結果」ボタンを置くための算出で、
+ * 表示の有無はその回に自動レビューが走ったかどうかだけで決まる。 */
+function buildAutoReviewBatches(
+  messages: { id: number; request_id: number | null }[],
+  autoReviews: AutoReviewItem[],
+): AutoReviewBatches {
+  const map = new Map<number, AutoReviewItem[]>();
+  for (const r of autoReviews) {
+    const arr = map.get(r.request_id) ?? [];
+    arr.push(r);
+    map.set(r.request_id, arr);
+  }
+  const batchEndIds = new Set<number>();
+  messages.forEach((m, i) => {
+    if (m.request_id != null && map.has(m.request_id)) {
+      const next = messages[i + 1];
+      if (!next || next.request_id !== m.request_id) batchEndIds.add(m.id);
+    }
+  });
+  return { map, batchEndIds };
+}
 
 function ChatView({ characterId, unreadFromSeq, back }: { characterId: number; unreadFromSeq: number | null; back: () => void }) {
   const queryClient = useQueryClient();
@@ -5094,22 +5070,10 @@ function ChatView({ characterId, unreadFromSeq, back }: { characterId: number; u
   // 最後の発言の後ろに「レビュー結果」ボタンを置く。表示の有無は、その回に
   // 自動レビューが走ったかどうかだけで決まる（現在の ON/OFF には連動しない）。
   const [autoReviewRequestId, setAutoReviewRequestId] = useState<number | null>(null);
-  const autoReviewMap = new Map<number, AutoReviewItem[]>();
-  for (const r of data?.auto_reviews ?? []) {
-    const arr = autoReviewMap.get(r.request_id) ?? [];
-    arr.push(r);
-    autoReviewMap.set(r.request_id, arr);
-  }
-  const autoReviewBatchEndIds = new Set<number>();
-  {
-    const msgs = data?.messages ?? [];
-    msgs.forEach((m, i) => {
-      if (m.request_id != null && autoReviewMap.has(m.request_id)) {
-        const next = msgs[i + 1];
-        if (!next || next.request_id !== m.request_id) autoReviewBatchEndIds.add(m.id);
-      }
-    });
-  }
+  const { map: autoReviewMap, batchEndIds: autoReviewBatchEndIds } = buildAutoReviewBatches(
+    data?.messages ?? [],
+    data?.auto_reviews ?? [],
+  );
   const selectedReviewMsg = data?.messages.find((m) => m.id === selectedReviewId && m.speaker === "character") ?? null;
 
   // 返信待ち（pending / 生成中）の間は送信できない。取り消しボタンは
@@ -5312,12 +5276,7 @@ function ChatView({ characterId, unreadFromSeq, back }: { characterId: number; u
       </div>
 
       <div className="shrink-0 px-3 pb-safe" style={{ background: "var(--bg)" }}>
-        {reviewNotice && (
-          <div className="mb-2 flex items-start gap-2 rounded-xl px-3 py-2" style={{ background: "var(--accent-soft)" }} role="status">
-            <p className="min-w-0 flex-1 text-sm" style={{ color: "var(--text)" }}>{reviewNotice}</p>
-            <button type="button" onClick={() => setReviewNotice("")} aria-label={T.chat.closeNoticeAria} className="shrink-0 text-sm font-bold" style={{ color: "var(--dim)" }}>×</button>
-          </div>
-        )}
+        <DismissibleNotice text={reviewNotice} onDismiss={() => setReviewNotice("")} />
         {reviewMode && selectedReviewMsg && data && (
           <ReviewPanel
             speakerName={data.character.display_name}
@@ -5334,12 +5293,7 @@ function ChatView({ characterId, unreadFromSeq, back }: { characterId: number; u
             {failNotice}
           </p>
         )}
-        {cancelNotice && (
-          <div className="mb-2 flex items-start gap-2 rounded-xl px-3 py-2" style={{ background: "var(--accent-soft)" }} role="status">
-            <p className="min-w-0 flex-1 text-sm" style={{ color: "var(--text)" }}>{cancelNotice}</p>
-            <button type="button" onClick={() => setCancelNotice("")} aria-label={T.chat.closeNoticeAria} className="shrink-0 text-sm font-bold" style={{ color: "var(--dim)" }}>×</button>
-          </div>
-        )}
+        <DismissibleNotice text={cancelNotice} onDismiss={() => setCancelNotice("")} />
         {reviewMode && (
           <p className="mb-1.5 rounded-xl px-3 py-2 text-xs leading-relaxed" style={{ background: "var(--accent-soft)", color: "var(--text)" }} role="status">
             {T.review.reviewModeNote}
@@ -5476,7 +5430,7 @@ function RoleplaySheet({
   // （元参加者は過去の発言の参照用に members へ含まれているだけ）。
   const presentMembers = members.filter((m) => m.present && m.in_group);
   return (
-    <div className="sheet-overlay fixed inset-0 z-50 flex items-center justify-center p-4" style={{ background: "rgba(10,6,20,0.55)" }} role="dialog" aria-modal="true" aria-label={T.roleplay.title}>
+    <div className="sheet-overlay" role="dialog" aria-modal="true" aria-label={T.roleplay.title}>
       <div className="max-h-full w-full max-w-md overflow-y-auto rounded-3xl p-5" style={{ background: "var(--surface)" }}>
         <h2 className="font-display text-lg font-bold" style={{ color: "var(--text)" }}>{T.roleplay.title}</h2>
         <p className="mt-2 text-sm leading-relaxed" style={{ color: "var(--dim)" }}>
@@ -5591,33 +5545,13 @@ function GroupMenuSheet({
     { label: T.groupMenu.deleteGroup, description: T.groupMenu.deleteGroupDesc, danger: true, onSelect: onDelete },
   ];
   return (
-    <div className="sheet-overlay fixed inset-0 z-50 flex items-center justify-center p-4" style={{ background: "rgba(10,6,20,0.55)" }} role="dialog" aria-modal="true" aria-label={T.groupMenu.menuAria}>
-      <div className="max-h-full w-full max-w-md overflow-y-auto rounded-3xl p-5" style={{ background: "var(--surface)" }}>
-        <h2 className="font-display min-w-0 truncate text-lg font-bold" style={{ color: "var(--text)" }}>{T.groupMenu.title(groupName)}</h2>
-        <div className="mt-4 flex flex-col gap-2">
-          {items.map((item) => (
-            <button
-              key={item.label}
-              type="button"
-              onClick={item.onSelect}
-              className="w-full rounded-2xl px-4 py-3 text-left"
-              style={{ background: "var(--surface-alt)", color: "var(--text)" }}
-            >
-              <span className="block font-bold" style={item.danger ? { color: "var(--danger)" } : undefined}>{item.label}</span>
-              <span className="mt-0.5 block text-xs" style={{ color: "var(--dim)" }}>{item.description}</span>
-            </button>
-          ))}
-        </div>
-        <button
-          type="button"
-          onClick={onClose}
-          className="mt-4 w-full rounded-full px-4 py-2.5 font-bold"
-          style={{ background: "var(--surface)", color: "var(--text)", border: "1px solid var(--border)" }}
-        >
-          {T.common.close}
-        </button>
-      </div>
-    </div>
+    <MenuSheet
+      title={T.groupMenu.title(groupName)}
+      ariaLabel={T.groupMenu.menuAria}
+      titleTruncate
+      items={items}
+      onClose={onClose}
+    />
   );
 }
 
@@ -5652,7 +5586,7 @@ function GroupGuestMobSheet({
     onError: (e) => setError(errMsg(e, T.common.saveFailed)),
   });
   return (
-    <div className="sheet-overlay fixed inset-0 z-50 flex items-center justify-center p-4" style={{ background: "rgba(10,6,20,0.55)" }} role="dialog" aria-modal="true" aria-label={T.groupGuestMob.title}>
+    <div className="sheet-overlay" role="dialog" aria-modal="true" aria-label={T.groupGuestMob.title}>
       <div className="max-h-full w-full max-w-md overflow-y-auto rounded-3xl p-5" style={{ background: "var(--surface)" }}>
         <h2 className="font-display text-lg font-bold" style={{ color: "var(--text)" }}>{T.groupGuestMob.title}</h2>
         <p className="mt-2 text-sm leading-relaxed" style={{ color: "var(--dim)" }}>
@@ -5692,11 +5626,6 @@ function GroupGuestMobSheet({
   );
 }
 
-/** フレーバーの見出し: 貼られたテキストの先頭の非空行（サーバ側の見出しと同じ規則）。 */
-function flavorTitleOf(text: string): string {
-  const first = text.split(/\r?\n/).map((l) => l.trim()).find((l) => l.length > 0) ?? "";
-  return first.length > 60 ? `${first.slice(0, 60)}…` : first;
-}
 
 /**
  * フレーバー一式の編集部品（指定中の一覧＋貼り付け追加＋履歴からの追加）。
@@ -5739,7 +5668,7 @@ function FlavorListEditor({
           {value.map((f, i) => (
             <div key={`${i}-${f.slice(0, 24)}`} className="rounded-2xl px-3 py-2.5" style={{ background: "var(--surface-alt)" }}>
               <div className="flex items-center gap-2">
-                <span className="min-w-0 flex-1 truncate text-sm font-bold" style={{ color: "var(--text)" }}>{flavorTitleOf(f)}</span>
+                <span className="min-w-0 flex-1 truncate text-sm font-bold" style={{ color: "var(--text)" }}>{flavorTitle(f)}</span>
                 <button
                   type="button"
                   onClick={() => setExpanded(expanded === i ? null : i)}
@@ -5753,7 +5682,7 @@ function FlavorListEditor({
                   type="button"
                   onClick={() => onChange(value.filter((_, j) => j !== i))}
                   disabled={disabled}
-                  aria-label={T.flavors.removeAria(flavorTitleOf(f))}
+                  aria-label={T.flavors.removeAria(flavorTitle(f))}
                   className="shrink-0 rounded-full px-2.5 py-1 text-xs font-bold disabled:opacity-50"
                   style={{ background: "var(--surface)", color: "var(--danger)" }}
                 >
@@ -5851,7 +5780,7 @@ function FlavorSheet({
     onError: (e) => setError(errMsg(e, T.flavors.saveFailed)),
   });
   return (
-    <div className="sheet-overlay fixed inset-0 z-50 flex items-center justify-center p-4" style={{ background: "rgba(10,6,20,0.55)" }} role="dialog" aria-modal="true" aria-label={T.flavors.title}>
+    <div className="sheet-overlay" role="dialog" aria-modal="true" aria-label={T.flavors.title}>
       <div className="max-h-full w-full max-w-md overflow-y-auto rounded-3xl p-5" style={{ background: "var(--surface)" }}>
         <h2 className="font-display text-lg font-bold" style={{ color: "var(--text)" }}>{T.flavors.title}</h2>
         <p className="mt-2 text-sm leading-relaxed" style={{ color: "var(--dim)" }}>
@@ -5966,7 +5895,7 @@ function GroupMembersSheet({
     save.mutate();
   };
   return (
-    <div className="sheet-overlay fixed inset-0 z-50 flex items-center justify-center p-4" style={{ background: "rgba(10,6,20,0.55)" }} role="dialog" aria-modal="true" aria-label={T.groupMembers.title}>
+    <div className="sheet-overlay" role="dialog" aria-modal="true" aria-label={T.groupMembers.title}>
       <div className="max-h-full w-full max-w-md overflow-y-auto rounded-3xl p-5" style={{ background: "var(--surface)" }}>
         <h2 className="font-display text-lg font-bold" style={{ color: "var(--text)" }}>{T.groupMembers.title}</h2>
         <p className="mt-2 text-sm leading-relaxed" style={{ color: "var(--dim)" }}>
@@ -5988,27 +5917,14 @@ function GroupMembersSheet({
             </button>
           </div>
         )}
-        <div className="mt-2 flex flex-col gap-1">
-          {visibleCharacters.map((c) => (
-            <label key={c.id} className="flex min-h-11 cursor-pointer items-center gap-3 rounded-2xl px-2 py-1.5" style={{ background: selected.includes(c.id) ? "var(--accent-soft)" : "transparent" }}>
-              <input
-                type="checkbox"
-                checked={selected.includes(c.id)}
-                onChange={() => toggle(c.id)}
-                aria-label={T.createGroup.joinAria(c.display_name)}
-                className="h-5 w-5 shrink-0"
-              />
-              <Avatar imageUrl={c.image_url} name={c.display_name} themeColor={c.theme_color} size={36} />
-              <span className="font-bold" style={{ color: "var(--text)" }}>{c.display_name}</span>
-              {currentMemberIds.includes(c.id) && (
-                <span className="rounded-full px-2 py-0.5 text-xs font-bold" style={{ background: "var(--surface-alt)", color: "var(--dim)" }}>{T.groupMembers.inGroupBadge}</span>
-              )}
-            </label>
-          ))}
-          {visibleCharacters.length === 0 && !home.isPending && (
-            <p className="px-2 py-3 text-sm" style={{ color: "var(--dim)" }}>{T.common.categoryEmpty}</p>
-          )}
-        </div>
+        <CharacterCheckList
+          characters={visibleCharacters}
+          selected={selected}
+          onToggle={toggle}
+          ariaLabel={(c) => T.createGroup.joinAria(c.display_name)}
+          badge={(c) => (currentMemberIds.includes(c.id) ? <span className="rounded-full px-2 py-0.5 text-xs font-bold" style={{ background: "var(--surface-alt)", color: "var(--dim)" }}>{T.groupMembers.inGroupBadge}</span> : null)}
+          showEmpty={!home.isPending}
+        />
         {roleplayRemoved && roleplayMember && (
           <p className="mt-3 rounded-xl px-3 py-2 text-sm" style={{ background: "var(--accent-soft)", color: "var(--danger)" }} role="alert">
             {T.groupMembers.roleplayRemovedWarning(roleplayMember.display_name)}
@@ -6184,22 +6100,10 @@ function GroupView({ groupId, unreadFromSeq, back }: { groupId: number; unreadFr
   // 「レビュー結果」ボタンを置く（表示はその回に自動レビューが走ったか
   // どうかだけで決まり、現在の ON/OFF には連動しない）。
   const [autoReviewRequestId, setAutoReviewRequestId] = useState<number | null>(null);
-  const autoReviewMap = new Map<number, AutoReviewItem[]>();
-  for (const r of data?.auto_reviews ?? []) {
-    const arr = autoReviewMap.get(r.request_id) ?? [];
-    arr.push(r);
-    autoReviewMap.set(r.request_id, arr);
-  }
-  const autoReviewBatchEndIds = new Set<number>();
-  {
-    const msgs = data?.messages ?? [];
-    msgs.forEach((m, i) => {
-      if (m.request_id != null && autoReviewMap.has(m.request_id)) {
-        const next = msgs[i + 1];
-        if (!next || next.request_id !== m.request_id) autoReviewBatchEndIds.add(m.id);
-      }
-    });
-  }
+  const { map: autoReviewMap, batchEndIds: autoReviewBatchEndIds } = buildAutoReviewBatches(
+    data?.messages ?? [],
+    data?.auto_reviews ?? [],
+  );
 
   // 返信待ち（pending / 生成中）の間は投稿できない。取り消しボタンは
   // 生成が始まる前（pending の間）だけ出す。対象は、未返信の話題がある時は
@@ -6500,12 +6404,7 @@ function GroupView({ groupId, unreadFromSeq, back }: { groupId: number; unreadFr
               {T.group.historyOffNote}
             </p>
           )}
-          {reviewNotice && (
-            <div className="mb-2 flex items-start gap-2 rounded-xl px-3 py-2" style={{ background: "var(--accent-soft)" }} role="status">
-              <p className="min-w-0 flex-1 text-sm" style={{ color: "var(--text)" }}>{reviewNotice}</p>
-              <button type="button" onClick={() => setReviewNotice("")} aria-label={T.chat.closeNoticeAria} className="shrink-0 text-sm font-bold" style={{ color: "var(--dim)" }}>×</button>
-            </div>
-          )}
+          <DismissibleNotice text={reviewNotice} onDismiss={() => setReviewNotice("")} />
           {reviewMode && selectedReviewMsg && selectedReviewMsg.character_id != null && (
             <ReviewPanel
               speakerName={selectedReviewMsg.speaker_name}
@@ -6522,12 +6421,7 @@ function GroupView({ groupId, unreadFromSeq, back }: { groupId: number; unreadFr
               {failNotice}
             </p>
           )}
-          {cancelNotice && (
-            <div className="mb-2 flex items-start gap-2 rounded-xl px-3 py-2" style={{ background: "var(--accent-soft)" }} role="status">
-              <p className="min-w-0 flex-1 text-sm" style={{ color: "var(--text)" }}>{cancelNotice}</p>
-              <button type="button" onClick={() => setCancelNotice("")} aria-label={T.chat.closeNoticeAria} className="shrink-0 text-sm font-bold" style={{ color: "var(--dim)" }}>×</button>
-            </div>
-          )}
+          <DismissibleNotice text={cancelNotice} onDismiss={() => setCancelNotice("")} />
           {reviewMode && (
             <p className="mb-1.5 rounded-xl px-3 py-2 text-xs leading-relaxed" style={{ background: "var(--accent-soft)", color: "var(--text)" }} role="status">
               {T.review.reviewModeNote}
