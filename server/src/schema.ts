@@ -89,6 +89,17 @@ export const characters = sqliteTable("characters", {
   // （上限3回で停止し、利用者が発言すると0に戻る）。
   autoTopicEnabled: autoTopicEnabledCol(),
   autoTopicCount: autoTopicCountCol(),
+  // 自動レビュー（2026-11-27）: 旧・キャラごとの ON/OFF。2026-11-28 の
+  // 起動方式変更で起動判定には使われなくなった（カラムのみ残置）。自動
+  // レビューの詳細は reviews.review_kind = "auto" の行を参照。
+  // このテーブルでしか使わないため、共通ファクトリへは寄せずここへ直接書く。
+  autoReview: integer("auto_review").notNull().default(0),
+  // レビューモードの保持（2026-11-28）: チャット画面のレビューモード ON/OFF を
+  // チャットごとに保持する。一度 ON にしたら、利用者が OFF にするまで ON の
+  // まま（画面を離れて戻っても維持される）。送信時の自動レビューの起動判定は
+  // 投稿アクションがこの保存値で行う。groups にも同じカラムがあるため、
+  // 共通ファクトリへは寄せず両テーブルへ同じ定義を直接書く。
+  reviewMode: integer("review_mode").notNull().default(0),
   createdAt: createdAtCol(),
 });
 
@@ -176,6 +187,9 @@ export const groups = sqliteTable("groups", {
   // 要約したタイトルがグループ名として代入され直す。作成時とグループ設定
   // （名前変更シート）で切り替える。既定は 0（従来通り名前は固定）。
   autoTitle: integer("auto_title").notNull().default(0),
+  // レビューモードの保持（2026-11-28）: characters.review_mode と同じ意味。
+  // グループごとに保持し、ON のまま画面を離れて戻っても維持される。
+  reviewMode: integer("review_mode").notNull().default(0),
   // 旧「背景情報」（設計書 v2.0 / C）: フレーバー化に伴い、値は migration
   // 0021 で flavors の1件目へ移行済み。このカラムは移行時点の値を保持する
   // だけで、読み書きは一切されない（characters.category_id と同じ扱い）。
@@ -278,11 +292,36 @@ export const meta = sqliteTable("meta", {
 export const reviews = sqliteTable("reviews", {
   id: integer("id").primaryKey({ autoIncrement: true }),
   characterId: integer("character_id").notNull(),
+  // 種別（2026-11-27）: manual = 利用者が登録した手動レビュー（従来通り）、
+  // auto = 自動レビュー（返信生成の前に、その回に送られた利用者の
+  // メッセージだけを材料として自動登録される。2026-11-28 に生成後方式から
+  // 変更）。見直し・差分記録・自動適用・取り消しの流れは両種別で同一。
+  reviewKind: text("review_kind", { enum: ["manual", "auto"] }).notNull().default("manual"),
   targetKind: text("target_kind", { enum: ["chat", "group", "settings"] }).notNull(),
   targetId: integer("target_id").notNull(),
   messageId: integer("message_id"),
   messageBody: text("message_body").notNull(),
   feedback: text("feedback").notNull(),
+  // 自動レビューの紐付けと材料（review_kind = "auto" の時だけ意味を持つ）:
+  // request_id はその回の生成リクエスト（reply_requests.id）。「リクエスト＋
+  // キャラ」の組み合わせは一意（DB の部分ユニーク索引でも保証）で、二重適用
+  // を防ぐ。batch_text はその回に送られた利用者のメッセージを発言形式で
+  // 複写したもので、見直しの材料と履歴表示に使う（元の発言が後から消えても
+  // 材料が残るよう、登録時点の複写を保持する）。
+  requestId: integer("request_id"),
+  batchText: text("batch_text").notNull().default(""),
+  // 自動レビューの生記録（review_kind = "auto" の時だけ意味を持つ）:
+  // prompt_text は見直しAIへ実際に送ったプロンプト全文。生成ログと同じ
+  // 「--- システムプロンプト --- / --- ユーザープロンプト ---」の形式で、
+  // getReviewWorkItems が材料を組み立てた時点でサーバ側が保存する（仲介が
+  // 転送する経路では巨大なプロンプトが落ちることがあるため、生成ログの
+  // プロンプト記録と同じ考え方）。response_text は返ってきたレスポンス
+  // 全文（completeReview が受け取った出力の原文。意図の分離・JSON検証の
+  // 前の姿で、検証失敗時も残る）。表示では「送った内容」と「レスポンス」
+  // の2つに分けて見せる（全体ログの生成記録と同じ分け方）。
+  // 手動レビュー・設定全体レビューでは常に空。
+  promptText: text("prompt_text").notNull().default(""),
+  responseText: text("response_text").notNull().default(""),
   // 改訂の意図: 見直し生成が修正後JSONとあわせて出力した「何を狙って、
   // どこをどう変えたか」の説明。completeReview が生成出力から分離して
   // ここへ保存し、レビュー履歴で差分・生データと並べて表示する。
@@ -344,11 +383,11 @@ export const schedules = sqliteTable("schedules", {
   // ナレーション（設計書 v3.1）: 新規チャット型でのみ意味を持ち、作成される
   // グループの allow_narration へ引き継ぐ。既存グループ型はグループ側の設定に従う。
   allowNarration: integer("allow_narration").notNull().default(0),
-  // 冒頭に議題を自動投稿（ローカル改善: 上流リポジトリには無い）: 1 の時、
-  // 発火時は通常の冒頭生成（origin=auto の返信リクエスト作成）の代わりに、
-  // 「自動」ボタンと同じ議題の処理（kickTopic）を行い、議題の投稿から
-  // 掛け合いを始める。既存グループ型・新規チャット型のどちらにも効く。
-  // 既定は 0（従来通り通常の冒頭生成）。
+  // 冒頭に議題を自動投稿（PR #6 取り込み、2026-11-27）: 1 の時、発火時は
+  // 通常の冒頭生成（origin=auto の返信リクエスト作成）の代わりに、「自動」
+  // ボタンと同じ議題の処理（kickTopic）を行い、議題の投稿から掛け合いを
+  // 始める。既存グループ型・新規チャット型のどちらにも効く。既定は 0
+  // （従来通り通常の冒頭生成）。
   autoTopicStart: integer("auto_topic_start").notNull().default(0),
   // 旧「履歴を使う」設定（v2.0）: 設計書 v3.2 でスケジュール側の選択肢は廃止され、
   // 履歴の使用設定はチャット／グループ側へ移った（新規チャット型は毎回まっさら、
